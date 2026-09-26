@@ -15,11 +15,40 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9
 
+  packages/trace-fixtures:
+    dependencies:
+      '@flow-view/trace-schema':
+        specifier: workspace:*
+        version: link:../trace-schema
+      '@flow-view/trace-store':
+        specifier: workspace:*
+        version: link:../trace-store
+    devDependencies:
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9
+
   packages/trace-schema:
     dependencies:
       ajv:
         specifier: ^8.17.1
         version: 8.20.0
+    devDependencies:
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9
+
+  packages/trace-store:
+    dependencies:
+      '@flow-view/trace-schema':
+        specifier: workspace:*
+        version: link:../trace-schema
     devDependencies:
       typescript:
         specifier: ^5.7.2

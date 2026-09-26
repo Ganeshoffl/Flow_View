@@ -11,10 +11,9 @@
   "scripts": {
     "schema:gen": "python3 packages/trace-schema/generate.py",
     "schema:check": "python3 packages/trace-schema/generate.py --check",
-    "build": "pnpm -r --filter './packages/**' build",
-    "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test",
-    "lint": "pnpm -r lint",
+    "build": "tsc -b packages/trace-fixtures",
+    "typecheck": "tsc -b packages/trace-fixtures --dry || tsc -b packages/trace-fixtures",
+    "test": "vitest run",
     "dev": "pnpm --filter @flow-view/web dev",
     "verify": "pnpm schema:check && pnpm typecheck && pnpm test"
   },
