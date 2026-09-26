@@ -38,10 +38,13 @@ fails the build if generated artifacts go stale.
 The first real adapter. Python first because `settrace` yields the richest data for the least work,
 which makes it the fastest way to discover whether the schema survives contact with a real runtime.
 
-- [ ] 1.0 **Benchmark spike first — heap walk cost.** Measure per-step cost of reachability-scoped
-      object walking at 100 / 1k / 10k live objects. Decide between full scoped walking and
-      locals-bounded walking *on evidence*, before building the adapter around either. This is the
-      largest unproven assumption in the design; it gets settled by measurement, not argument.
+- [x] 1.0 **Benchmark spike — heap walk cost.** *Done, and it overturned the design.* A full
+      reachable walk costs ~28ms per step at 10k objects: 568× over budget, 284s for a 10k-step
+      program. The fallback named in the design — bounding depth and object count — also failed, at
+      10ms, because capping objects does nothing about fan-out inside one object. The fix needed a
+      mechanism the design did not have: a per-object slot window, plus line-scoped roots and static
+      mutation analysis. Now 9.6–74µs and independent of heap size. NFR-3 was wrong and has been
+      corrected. See `docs/decisions/0001-reading-the-python-heap.md`.
 - [ ] 1.1 `flow_view_tracer`: line stepping, frame push/pop, `var_set` with `prev` (pure Python, zero dependencies)
 - [ ] 1.2 Heap registry: identity-keyed object ids, walk strategy chosen in 1.0, mutation diffing
 - [ ] 1.3 Opaque library boundary by source-path test

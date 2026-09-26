@@ -135,8 +135,14 @@ Both profiles share one UI, one set of renderers, and one trace format. Only the
 - **NFR-1** Step and back-step in the UI respond in under 50 ms at the 95th percentile for traces up to
   100,000 retained steps.
 - **NFR-2** First trace events reach the UI within 500 ms of pressing run for a trivial program.
-- **NFR-3** Tracing overhead stays within roughly 100× native speed for Python and JavaScript. The goal
-  is comprehensibility, not speed, but the tool must not appear hung.
+- **NFR-3** Per-step tracing cost stays within 100µs, and must not grow with the size of the
+  program's heap.
+
+  *Revised in Phase 1 after measurement.* This originally asked for overhead within roughly 100×
+  native speed, which no pure-Python tracer can deliver — `sys.settrace` alone exceeds it before any
+  state is inspected, so the figure was aspiration rather than analysis. A per-step budget is both
+  achievable and closer to what a user actually experiences. Measured worst case is 74µs, with
+  typical data shapes at 10–40µs. See `docs/decisions/0001-reading-the-python-heap.md`.
 - **NFR-4** Heap view sustains 30 fps while animating up to 500 visible nodes.
 
 ### Resource safety
