@@ -118,12 +118,20 @@ class Registry:
     than one that uses more memory. The step budget bounds how far it can go.
     """
 
-    __slots__ = ("_ids", "_keep", "_next")
+    __slots__ = ("_ids", "_keep", "_next", "_on_new")
 
-    def __init__(self) -> None:
+    def __init__(self, on_new: Callable[[int, object], None] | None = None) -> None:
         self._ids: dict[int, int] = {}
         self._keep: dict[int, object] = {}
         self._next = 1
+        # Fires exactly once per object, the moment it is first given an id.
+        #
+        # This is a single choke point on purpose. Ids are handed out from several places — the walk
+        # visiting an object, the walk merely *referencing* one beyond its depth limit, the tracer
+        # encoding a variable's value — and an id that reaches the trace without the object being
+        # announced produces a trace that mutates something it never introduced. Announcing here
+        # makes that impossible rather than merely discouraged.
+        self._on_new = on_new
 
     def id_for(self, obj: object) -> int:
         key = id(obj)
@@ -134,6 +142,8 @@ class Registry:
         self._next += 1
         self._ids[key] = assigned
         self._keep[key] = obj
+        if self._on_new is not None:
+            self._on_new(assigned, obj)
         return assigned
 
     def known(self, obj: object) -> bool:
