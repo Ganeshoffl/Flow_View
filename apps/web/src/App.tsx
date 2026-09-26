@@ -1,12 +1,12 @@
 /**
- * The Phase 0 shell.
+ * flow_view.
  *
- * Fixtures in, full playback out. No adapter exists yet and that is the point: if the trace format
- * or the store is wrong, it shows up here, while the cost of changing them is still one package
- * rather than four language adapters.
+ * Two modes over one set of views. **Run** traces a program you paste, through the local server.
+ * **Examples** replays the fixture corpus with no server at all.
  *
- * Phase 1 swaps the fixture picker for a real editor and a live session. Every pane below keeps
- * working unchanged, because none of them knows where a trace came from.
+ * Every pane below is identical in both modes, because none of them knows where a trace came from.
+ * That is the trace format doing its job: when the JavaScript adapter lands, or Pyodide in a worker,
+ * nothing here changes.
  */
 
 import { useCallback, useMemo, useState } from "react";
@@ -22,14 +22,146 @@ import {
 } from "@flow-view/renderers";
 import { TraceStore } from "@flow-view/trace-store";
 
+import { Editor } from "./Editor.js";
+import { RunControls } from "./RunControls.js";
+import { useLiveRun } from "./useLiveRun.js";
+
+type Mode = "run" | "examples";
+
+const STARTER = `def fact(n):
+    if n <= 1:
+        return 1
+    return n * fact(n - 1)
+
+values = []
+for i in range(1, 6):
+    values.append(fact(i))
+
+print(values)
+`;
+
 export function App() {
-  const [fixtureId, setFixtureId] = useState<string>(FIXTURES[0]?.id ?? "assignment");
+  const [mode, setMode] = useState<Mode>("run");
   const [highlighted, setHighlighted] = useState<number | undefined>(undefined);
 
+  return (
+    <div className="fv-app">
+      <header className="fv-header">
+        <div className="fv-logo">
+          flow<span>_</span>view
+        </div>
+        <span className="fv-tagline">See what your code does while it runs.</span>
+        <div className="fv-header-spacer" />
+        <div className="fv-modes" role="tablist" aria-label="Mode">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "run"}
+            className={mode === "run" ? "is-primary" : ""}
+            onClick={() => setMode("run")}
+          >
+            Run your code
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "examples"}
+            className={mode === "examples" ? "is-primary" : ""}
+            onClick={() => setMode("examples")}
+          >
+            Examples
+          </button>
+        </div>
+      </header>
+
+      {mode === "run" ? (
+        <LiveMode highlighted={highlighted} onHighlight={setHighlighted} />
+      ) : (
+        <ExampleMode highlighted={highlighted} onHighlight={setHighlighted} />
+      )}
+    </div>
+  );
+}
+
+interface ModeProps {
+  readonly highlighted: number | undefined;
+  readonly onHighlight: (obj: number | undefined) => void;
+}
+
+function LiveMode({ highlighted, onHighlight }: ModeProps) {
+  const live = useLiveRun();
+  const [source, setSource] = useState(STARTER);
+  const [stdin, setStdin] = useState("");
+
+  const run = useCallback(() => {
+    live.run({
+      source,
+      language: "python",
+      stdin: stdin.trim() ? stdin : undefined,
+    });
+  }, [live, source, stdin]);
+
+  // The code pane shows the source the *running* trace belongs to, not whatever has been typed
+  // since. Highlighting line 4 of a program the user has edited underneath would point at the wrong
+  // code entirely.
+  const tracedSource = useMemo(() => {
+    if (!live.session) return source.split("\n");
+    return live.store.getSession() ? sourceOfRun(live.store, source) : source.split("\n");
+  }, [live.session, live.store, source]);
+
+  const started = live.status !== "idle" && live.session !== undefined;
+
+  return (
+    <>
+      <RunControls live={live} onRun={run} stdin={stdin} onStdinChange={setStdin} />
+
+      <main className="fv-main">
+        {started ? (
+          <CodePane store={live.store} source={tracedSource} language="python" />
+        ) : (
+          <Editor
+            value={source}
+            language="python"
+            onChange={setSource}
+            onRun={run}
+            disabled={live.status === "running"}
+          />
+        )}
+        <div className="fv-column">
+          <StackPane store={live.store} language="python" />
+          <VariablesPane
+            store={live.store}
+            language="python"
+            highlightedObject={highlighted}
+            onHighlightObject={onHighlight}
+          />
+        </div>
+        <div className="fv-column">
+          <OutputPane store={live.store} />
+          <MetricsPane store={live.store} />
+        </div>
+      </main>
+    </>
+  );
+}
+
+/** The source as the running trace recorded it, falling back to the editor's text. */
+function sourceOfRun(store: TraceStore, fallback: string): string[] {
+  const session = store.getSession();
+  const lineCount = session?.source_files?.[0]?.line_count ?? 0;
+  const lines = fallback.split("\n");
+  // The header carries a line count and a digest rather than the text itself, so the editor's
+  // content is the only copy available. Trimming to the recorded length keeps them aligned when the
+  // user has since typed more.
+  return lineCount > 0 ? lines.slice(0, Math.max(lineCount, 1)) : lines;
+}
+
+function ExampleMode({ highlighted, onHighlight }: ModeProps) {
+  const [fixtureId, setFixtureId] = useState<string>(FIXTURES[0]?.id ?? "assignment");
   const fixture = getFixture(fixtureId);
 
-  // A fresh store per fixture. Reusing one would leave the previous trace's undo journal behind,
-  // which is exactly the sort of state leak that produces a bug nobody can reproduce.
+  // A fresh store per fixture. Reusing one would carry the previous trace's undo journal across,
+  // which is the sort of leak that produces a bug nobody can reproduce.
   const store = useMemo(() => {
     const created = new TraceStore();
     created.load(fixture.build());
@@ -38,7 +170,6 @@ export function App() {
 
   const seekToLine = useCallback(
     (line: number) => {
-      // Land on the first step that executed this line, so clicking source navigates the trace.
       for (let i = 0; i < store.eventCount; i++) {
         const event = store.eventAt(i);
         if (event?.t === "step_line" && event.line === line) {
@@ -51,13 +182,8 @@ export function App() {
   );
 
   return (
-    <div className="fv-app">
-      <header className="fv-header">
-        <div className="fv-logo">
-          flow<span>_</span>view
-        </div>
-        <span className="fv-tagline">See what your code does while it runs.</span>
-        <div className="fv-header-spacer" />
+    <>
+      <div>
         <div className="fv-picker">
           <label htmlFor="fixture">Example</label>
           <select
@@ -65,7 +191,7 @@ export function App() {
             value={fixtureId}
             onChange={(event) => {
               setFixtureId(event.target.value);
-              setHighlighted(undefined);
+              onHighlight(undefined);
             }}
           >
             {FIXTURES.map((f) => (
@@ -74,26 +200,9 @@ export function App() {
               </option>
             ))}
           </select>
-        </div>
-      </header>
-
-      <div>
-        <p className="fv-fixture-summary">{fixture.summary}</p>
-        <div className="fv-concepts">
-          {fixture.concepts.map((concept) => (
-            <span key={concept} className="fv-concept">
-              {concept}
-            </span>
-          ))}
+          <span className="fv-fixture-summary">{fixture.summary}</span>
         </div>
         <PlaybackBar store={store} />
-        <p className="fv-banner">
-          <span className="fv-kbd">Left</span> <span className="fv-kbd">Right</span> step ·{" "}
-          <span className="fv-kbd">Space</span> play · <span className="fv-kbd">o</span>{" "}
-          <span className="fv-kbd">i</span> <span className="fv-kbd">u</span> over, into, out ·{" "}
-          <span className="fv-kbd">Home</span> <span className="fv-kbd">End</span> jump to either
-          end. Stepping backward replays recorded history, so your program never runs twice.
-        </p>
       </div>
 
       <main className="fv-main">
@@ -109,7 +218,7 @@ export function App() {
             store={store}
             language={fixture.language}
             highlightedObject={highlighted}
-            onHighlightObject={setHighlighted}
+            onHighlightObject={onHighlight}
           />
         </div>
         <div className="fv-column">
@@ -117,6 +226,6 @@ export function App() {
           <MetricsPane store={store} />
         </div>
       </main>
-    </div>
+    </>
   );
 }

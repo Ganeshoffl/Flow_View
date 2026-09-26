@@ -625,3 +625,178 @@ select {
     height: auto;
   }
 }
+
+
+/* ---------------------------------------------------------------- modes */
+
+.fv-modes {
+  display: flex;
+  gap: 6px;
+}
+
+/* --------------------------------------------------------------- run bar */
+
+.fv-runbar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fv-runbar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.fv-run {
+  min-width: 96px;
+  font-weight: 600;
+}
+
+/* Status is a word, never only a colour. */
+.fv-status {
+  font-size: 12px;
+  padding: 2px 9px;
+  border-radius: 10px;
+  background: var(--fv-surface-2);
+  border: 1px solid var(--fv-border);
+}
+
+.fv-status.is-running,
+.fv-status.is-starting {
+  color: var(--fv-accent);
+  border-color: var(--fv-accent);
+}
+
+.fv-status.is-awaiting-input {
+  color: var(--fv-active);
+  border-color: var(--fv-active);
+}
+
+.fv-status.is-complete {
+  color: var(--fv-good);
+  border-color: color-mix(in srgb, var(--fv-good) 55%, transparent);
+}
+
+.fv-status.is-error {
+  color: var(--fv-bad);
+  border-color: color-mix(in srgb, var(--fv-bad) 55%, transparent);
+}
+
+.fv-toggle {
+  font-size: 12px;
+}
+
+.fv-follow,
+.fv-runtime {
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.fv-stdin-prefill {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+}
+
+.fv-stdin-prefill textarea,
+.fv-editor-area {
+  font-family: var(--fv-mono);
+  font-size: 13px;
+  color: var(--fv-text);
+  background: var(--fv-surface);
+  border: 1px solid var(--fv-border);
+  border-radius: 6px;
+  padding: 7px 9px;
+  resize: vertical;
+}
+
+/* The program is waiting on a person, so it reads as a question rather than a stalled screen. */
+.fv-ask {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  border-radius: 6px;
+  border-left: 3px solid var(--fv-active);
+  background: color-mix(in srgb, var(--fv-active) 10%, var(--fv-surface));
+}
+
+.fv-ask-prompt {
+  font-family: var(--fv-mono);
+  color: var(--fv-active);
+  white-space: pre-wrap;
+}
+
+.fv-ask input {
+  flex: 1;
+  min-width: 120px;
+  font-family: var(--fv-mono);
+  font-size: 13px;
+  color: var(--fv-text);
+  background: var(--fv-bg);
+  border: 1px solid var(--fv-active);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+
+.fv-error-detail {
+  margin: 6px 0 0;
+  padding: 7px 9px;
+  border-radius: 5px;
+  background: var(--fv-bg);
+  font-family: var(--fv-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  max-height: 160px;
+  overflow: auto;
+}
+
+.fv-guards {
+  margin: 0;
+  font-size: 11px;
+}
+
+/* ---------------------------------------------------------------- editor */
+
+.fv-editor-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.fv-editor-gutter {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 8px 8px 10px;
+  font-family: var(--fv-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fv-muted);
+  text-align: right;
+  user-select: none;
+  background: var(--fv-surface-2);
+  border-right: 1px solid var(--fv-border);
+}
+
+.fv-editor-area {
+  flex: 1;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  line-height: 1.5;
+  padding: 8px 10px;
+  resize: none;
+  outline: none;
+  tab-size: 4;
+}
+
+.fv-editor-area:focus-visible {
+  outline: none;
+  box-shadow: inset 2px 0 0 var(--fv-accent);
+}

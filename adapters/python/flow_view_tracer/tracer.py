@@ -141,11 +141,21 @@ class _FrameState:
 def _summarize(obj: Any) -> str | None:
     """A short label for an object, where one can be produced safely.
 
-    Only for user-defined instances, and only from a ``__repr__`` the class defined itself. Calling
-    an arbitrary ``__repr__`` can run arbitrary code, including code that mutates the very object
-    being described, so the default object repr is not worth the risk and anything that raises is
-    silently skipped.
+    Calling an arbitrary ``__repr__`` runs arbitrary code — including, in the worst case, code that
+    mutates the object being described. So this is limited to things that can be named without
+    executing anything (functions, classes, modules) and to user classes that defined ``__repr__``
+    themselves. Anything that raises is skipped rather than reported.
     """
+    import types as _types
+
+    if isinstance(obj, (_types.FunctionType, _types.BuiltinFunctionType, _types.MethodType)):
+        name = getattr(obj, "__qualname__", None) or getattr(obj, "__name__", "function")
+        return f"{name}()"
+    if isinstance(obj, type):
+        return f"class {obj.__name__}"
+    if isinstance(obj, _types.ModuleType):
+        return f"module {getattr(obj, '__name__', '?')}"
+
     cls = type(obj)
     if cls.__module__ in ("builtins", "__builtin__"):
         return None
@@ -190,6 +200,11 @@ class Tracer:
     ) -> None:
         self.source = source
         self.path = os.path.abspath(path)
+        # Events carry a short name, not the absolute path. The server runs each program from a fresh
+        # temporary directory, so the absolute path is a meaningless string like
+        # /tmp/flow_view_run_tmxcriwu/main.py — which is what the UI was showing as a file heading.
+        # The full path is still used for file identity and for compiling.
+        self.display_path = os.path.basename(self.path)
         self.emitter = emitter
         self.options = options or TracerOptions()
         self.analysis: SourceAnalysis = analyze(self.path, source)
@@ -397,13 +412,15 @@ class Tracer:
         return fresh
 
     def _encode(self, value: Any) -> dict[str, Any]:
-        """Encode a live Python value as a schema value."""
+        """Encode a live Python value as a schema value.
+
+        Functions, classes and modules become heap objects like anything else, rather than the string
+        ``"<function>"``. Rendering a function as a string made the variables pane report its type as
+        ``str``, which is simply false. The walk still refuses to descend into them, so they appear as
+        named objects with no contents — shown, but not expanded.
+        """
         if is_atomic(value):
             return encode_primitive(value)
-        from .walk import _OPAQUE_TYPES  # noqa: PLC0415 - kept private to walk
-
-        if isinstance(value, _OPAQUE_TYPES):
-            return {"prim": f"<{type(value).__name__}>"}
         return {"ref": self._registry.id_for(value)}
 
     # -- branches ----------------------------------------------------------
@@ -556,7 +573,7 @@ class Tracer:
         if caller is not None:
             payload["caller"] = caller
         if kind == "user":
-            payload["path"] = self.path
+            payload["path"] = self.display_path
         self.emitter.emit("frame_push", payload)
         self._metric("call")
 
@@ -585,7 +602,9 @@ class Tracer:
         state.pending_line = line
         info = self.analysis.at(line)
 
-        self.emitter.emit("step_line", {"frame": state.frame_id, "line": line, "path": self.path})
+        self.emitter.emit(
+            "step_line", {"frame": state.frame_id, "line": line, "path": self.display_path}
+        )
 
         fresh = self._diff_locals(frame, state)
 
@@ -688,7 +707,7 @@ class Tracer:
             "type": exc_type.__name__,
             "message": str(exc_value),
             "line": frame.f_lineno,
-            "path": self.path,
+            "path": self.display_path,
         }
         if state is not None:
             payload["frame"] = state.frame_id
@@ -709,7 +728,12 @@ class Tracer:
         self._unwinding = False
         self.emitter.emit(
             "exception_catch",
-            {"frame": state.frame_id, "line": line, "path": self.path, "handler_line": line},
+            {
+                "frame": state.frame_id,
+                "line": line,
+                "path": self.display_path,
+                "handler_line": line,
+            },
         )
 
     # -- running -----------------------------------------------------------
@@ -764,6 +788,11 @@ class Tracer:
         sys.stdout = _OutputProxy(self, "stdout", original_stdout)
         sys.stderr = _OutputProxy(self, "stderr", original_stderr)
 
+        import builtins as _builtins
+
+        original_input = _builtins.input
+        _builtins.input = _InputBridge(self, sys.stdin)  # type: ignore[assignment]
+
         try:
             sys.settrace(self._trace)
             try:
@@ -782,6 +811,7 @@ class Tracer:
             self._report_uncaught(error)
         finally:
             sys.stdout, sys.stderr = original_stdout, original_stderr
+            _builtins.input = original_input
             self._close_open_frames()
 
         self.emitter.emit(
@@ -840,6 +870,67 @@ class Tracer:
                 {"frame": state.frame_id, "reason": "implicit", "line": state.pending_line},
             )
         self._frames.clear()
+
+
+class _InputBridge:
+    """Replaces ``input`` so reads become part of the trace.
+
+    Two things are recorded: that the program asked, and what it got. The answer matters as much as
+    the question — with it, a saved trace replays identically with no human present, which is what
+    makes an interactive run reviewable afterwards.
+
+    The prompt is carried on the request rather than written to stdout, where the real ``input``
+    would put it. A prompt is not program output; it is a question, and the UI needs to show it as
+    one rather than as a stray line of text.
+
+    Phase 1 records input supplied up front. Phase 5 adds the blocking round trip to the browser;
+    this is the half that makes a trace deterministic, and it is needed either way.
+    """
+
+    def __init__(self, tracer: Tracer, stdin: Any) -> None:
+        self._tracer = tracer
+        self._stdin = stdin
+
+    def __call__(self, prompt: object = "") -> str:
+        tracer = self._tracer
+        frame_id, line = tracer._current_ids()  # noqa: SLF001 - same package
+        text = "" if prompt is None else str(prompt)
+
+        tracer._muted = True  # noqa: SLF001 - same package
+        try:
+            payload: dict[str, Any] = {}
+            if frame_id is not None:
+                payload["frame"] = frame_id
+            if line:
+                payload["line"] = line
+            if text:
+                payload["prompt"] = text
+            tracer.emitter.emit("stdin_request", payload)
+        finally:
+            tracer._muted = False  # noqa: SLF001 - same package
+
+        supplied = self._stdin.readline()
+        if supplied == "":
+            # No more input. Raising EOFError is what real `input` does, so the program behaves as it
+            # would outside flow_view.
+            tracer._muted = True  # noqa: SLF001 - same package
+            try:
+                tracer.emitter.note(
+                    "warn", "The program asked for input but none was left to give."
+                )
+            finally:
+                tracer._muted = False  # noqa: SLF001 - same package
+            raise EOFError("no input available")
+
+        answer = supplied.rstrip("\n")
+        tracer._muted = True  # noqa: SLF001 - same package
+        try:
+            tracer.emitter.emit(
+                "stdin_response", {"text": answer, "source": "prefilled"}
+            )
+        finally:
+            tracer._muted = False  # noqa: SLF001 - same package
+        return answer
 
 
 class _OutputProxy:

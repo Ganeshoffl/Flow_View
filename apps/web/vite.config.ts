@@ -29,6 +29,15 @@ export default defineConfig({
     // execution surface the user never asked to publish.
     host: "127.0.0.1",
     port: 5173,
+    proxy: {
+      // In development the UI and the server run separately. In production the server serves the
+      // built UI from its own origin, so no proxy exists and none is needed.
+      "/api": {
+        target: "http://127.0.0.1:7474",
+        changeOrigin: true,
+        ws: true,
+      },
+    },
   },
   build: {
     outDir: "dist",
