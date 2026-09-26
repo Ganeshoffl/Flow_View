@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+.pnpm-store/
+*.tsbuildinfo
+.vite/
+
+# Build output
+apps/web/dist/
+apps/web-lite/dist/
+packages/*/dist/
+
+# Generated from packages/trace-schema — never edited by hand
+packages/trace-schema/generated/
+
+# Vendored Pyodide runtime (fetched at build time)
+apps/web/public/pyodide/
+
+# Adapter build artifacts
+adapters/native/build/
+adapters/java/classes/
+*.class
+*.o
+*.out
+
+# Traces and sessions
+*.fvtrace
+*.fvtrace.json
+.flow_view/
+
+# Test output
+coverage/
+htmlcov/
+.coverage
+playwright-report/
+test-results/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
