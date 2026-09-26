@@ -1,0 +1,627 @@
+/*
+ * flow_view presentation.
+ *
+ * Dark by default because the thing on screen is code. Information is never carried by colour
+ * alone — every coloured state also has a glyph, a label or a shape, so the views stay readable to
+ * anyone who does not see the hue.
+ */
+
+:root {
+  --fv-bg: #0f1117;
+  --fv-surface: #161923;
+  --fv-surface-2: #1d212d;
+  --fv-border: #282d3a;
+  --fv-text: #e4e7ee;
+  --fv-muted: #8b93a7;
+  --fv-accent: #62a0ff;
+  --fv-accent-dim: #1f3555;
+  --fv-active: #ffcf5c;
+  --fv-good: #5fd39a;
+  --fv-bad: #ff7a7a;
+  --fv-warn: #ffb454;
+  --fv-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
+  --fv-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--fv-bg);
+  color: var(--fv-text);
+  font-family: var(--fv-sans);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+button {
+  font: inherit;
+  color: var(--fv-text);
+  background: var(--fv-surface-2);
+  border: 1px solid var(--fv-border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--fv-accent);
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+button.is-primary {
+  background: var(--fv-accent-dim);
+  border-color: var(--fv-accent);
+}
+
+button:focus-visible,
+select:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--fv-accent);
+  outline-offset: 1px;
+}
+
+select {
+  font: inherit;
+  color: var(--fv-text);
+  background: var(--fv-surface-2);
+  border: 1px solid var(--fv-border);
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+
+.fv-muted {
+  color: var(--fv-muted);
+}
+
+/* ---------------------------------------------------------------- layout */
+
+.fv-app {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  height: 100vh;
+  gap: 10px;
+  padding: 10px;
+}
+
+.fv-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.fv-logo {
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.fv-logo span {
+  color: var(--fv-accent);
+}
+
+.fv-tagline {
+  color: var(--fv-muted);
+  font-size: 13px;
+}
+
+.fv-header-spacer {
+  flex: 1;
+}
+
+.fv-main {
+  display: grid;
+  grid-template-columns: minmax(340px, 1.35fr) minmax(280px, 1fr) minmax(260px, 0.9fr);
+  gap: 10px;
+  min-height: 0;
+}
+
+.fv-column {
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  gap: 10px;
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------------ pane */
+
+.fv-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--fv-surface);
+  border: 1px solid var(--fv-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.fv-pane-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  background: var(--fv-surface-2);
+  border-bottom: 1px solid var(--fv-border);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.fv-pane-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 10px;
+}
+
+.fv-empty {
+  color: var(--fv-muted);
+  font-style: italic;
+  margin: 4px 0;
+}
+
+/* ------------------------------------------------------------------ code */
+
+.fv-code-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  font-family: var(--fv-mono);
+  font-size: 13px;
+  padding: 6px 0;
+}
+
+.fv-code-line {
+  display: grid;
+  grid-template-columns: 3.2em 2.4em 1fr auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 1px 10px 1px 0;
+  cursor: default;
+  white-space: pre;
+}
+
+/* Executed lines are tinted by visit count, so a hot loop body reads at a glance. */
+.fv-code-line.is-visited {
+  background: color-mix(in srgb, var(--fv-accent) calc(var(--fv-heat, 0) * 14%), transparent);
+}
+
+.fv-code-line.is-active {
+  background: color-mix(in srgb, var(--fv-active) 18%, transparent);
+  box-shadow: inset 3px 0 0 var(--fv-active);
+}
+
+.fv-gutter {
+  color: var(--fv-muted);
+  text-align: right;
+  user-select: none;
+}
+
+.fv-visits {
+  color: var(--fv-muted);
+  font-size: 11px;
+  text-align: right;
+  user-select: none;
+}
+
+.fv-code-text {
+  font-family: inherit;
+}
+
+.fv-branch {
+  font-size: 11px;
+  padding: 0 6px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.fv-branch.is-taken {
+  color: var(--fv-good);
+  background: color-mix(in srgb, var(--fv-good) 14%, transparent);
+}
+
+.fv-branch.is-not_taken {
+  color: var(--fv-muted);
+  background: #ffffff0f;
+}
+
+/* ----------------------------------------------------------------- stack */
+
+.fv-frames {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fv-frame {
+  border: 1px solid var(--fv-border);
+  border-left: 3px solid var(--fv-accent);
+  border-radius: 6px;
+  padding: 6px 9px;
+  background: var(--fv-surface-2);
+}
+
+.fv-frame.is-returned {
+  border-left-color: var(--fv-border);
+  opacity: 0.62;
+}
+
+.fv-frame.is-focus {
+  border-color: var(--fv-accent);
+}
+
+.fv-frame-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.fv-frame-name {
+  font-family: var(--fv-mono);
+  font-weight: 600;
+}
+
+.fv-frame-args {
+  font-family: var(--fv-mono);
+  font-size: 12px;
+  color: var(--fv-muted);
+}
+
+.fv-frame-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.fv-return {
+  color: var(--fv-good);
+  font-family: var(--fv-mono);
+}
+
+.fv-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: #ffffff14;
+  color: var(--fv-muted);
+}
+
+.fv-badge.is-library {
+  color: var(--fv-warn);
+  background: color-mix(in srgb, var(--fv-warn) 16%, transparent);
+}
+
+/* ------------------------------------------------------------- variables */
+
+.fv-vars {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--fv-mono);
+  font-size: 13px;
+}
+
+.fv-var td {
+  padding: 3px 6px;
+  border-bottom: 1px solid #ffffff0a;
+  vertical-align: top;
+}
+
+.fv-var.is-changed {
+  background: color-mix(in srgb, var(--fv-active) 12%, transparent);
+}
+
+.fv-var.is-linked {
+  outline: 1px solid var(--fv-accent);
+}
+
+.fv-var-name {
+  color: var(--fv-accent);
+  white-space: nowrap;
+}
+
+.fv-var-value {
+  width: 100%;
+  word-break: break-word;
+}
+
+.fv-var-type {
+  font-size: 11px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* The changed state is a shape as well as a tint, so it survives without colour. */
+.fv-changed-marker {
+  display: inline-flex;
+  align-items: center;
+  color: var(--fv-active);
+  margin-left: 6px;
+}
+
+/* Available to screen readers, invisible on screen. */
+.fv-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.fv-branch-outcome {
+  margin-left: 6px;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+.fv-ref-chip {
+  font-family: var(--fv-mono);
+  font-size: 12px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--fv-accent-dim);
+  border-color: color-mix(in srgb, var(--fv-accent) 50%, transparent);
+}
+
+/* ---------------------------------------------------------------- output */
+
+.fv-output {
+  margin: 0;
+  font-family: var(--fv-mono);
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.fv-out-stderr {
+  color: var(--fv-bad);
+}
+
+.fv-prompt {
+  font-family: var(--fv-mono);
+  color: var(--fv-active);
+  margin: 6px 0 0;
+}
+
+.fv-caret {
+  display: inline-block;
+  width: 7px;
+  height: 1em;
+  margin-left: 3px;
+  background: var(--fv-active);
+  vertical-align: text-bottom;
+  animation: fv-blink 1s steps(2, start) infinite;
+}
+
+@keyframes fv-blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fv-caret {
+    animation: none;
+  }
+}
+
+.fv-awaiting {
+  color: var(--fv-active);
+  font-weight: 600;
+}
+
+.fv-note {
+  margin: 6px 0 0;
+  padding: 6px 9px;
+  border-radius: 6px;
+  font-size: 13px;
+  border-left: 3px solid var(--fv-border);
+  background: var(--fv-surface-2);
+}
+
+/* Labelled in words rather than with a symbol glyph, which not every font carries. */
+.fv-note::before {
+  display: inline-block;
+  margin-right: 7px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  vertical-align: 1px;
+}
+
+.fv-note.is-warn {
+  border-left-color: var(--fv-warn);
+}
+
+.fv-note.is-warn::before {
+  content: "warning";
+  color: var(--fv-bg);
+  background: var(--fv-warn);
+}
+
+.fv-note.is-info::before {
+  content: "note";
+  color: var(--fv-bg);
+  background: var(--fv-accent);
+}
+
+/* --------------------------------------------------------------- metrics */
+
+.fv-metrics {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 8px;
+}
+
+.fv-metric {
+  background: var(--fv-surface-2);
+  border: 1px solid var(--fv-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.fv-metric dt {
+  font-size: 11px;
+  color: var(--fv-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.fv-metric dd {
+  margin: 2px 0 0;
+  font-family: var(--fv-mono);
+  font-size: 17px;
+}
+
+/* -------------------------------------------------------------- playback */
+
+.fv-playback {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  background: var(--fv-surface);
+  border: 1px solid var(--fv-border);
+  border-radius: 8px;
+}
+
+.fv-transport {
+  display: flex;
+  gap: 6px;
+}
+
+.fv-transport-frames button {
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+.fv-scrub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 220px;
+}
+
+.fv-scrub input {
+  flex: 1;
+  accent-color: var(--fv-accent);
+}
+
+.fv-position,
+.fv-clock {
+  font-family: var(--fv-mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.fv-speed {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fv-muted);
+}
+
+/* --------------------------------------------------------------- picker */
+
+.fv-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fv-picker select {
+  min-width: 230px;
+}
+
+.fv-fixture-summary {
+  color: var(--fv-muted);
+  font-size: 13px;
+  margin: 0;
+  padding: 0 2px;
+}
+
+.fv-concepts {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.fv-concept {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: #ffffff10;
+  color: var(--fv-muted);
+}
+
+.fv-banner {
+  padding: 7px 10px;
+  border-radius: 6px;
+  border-left: 3px solid var(--fv-accent);
+  background: var(--fv-surface);
+  font-size: 13px;
+  color: var(--fv-muted);
+}
+
+.fv-kbd {
+  font-family: var(--fv-mono);
+  font-size: 11px;
+  padding: 1px 5px;
+  border: 1px solid var(--fv-border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--fv-surface-2);
+  color: var(--fv-text);
+}
+
+/* Desktop-first, as specified. Narrow screens get a single readable column. */
+@media (max-width: 1200px) {
+  .fv-main {
+    grid-template-columns: minmax(340px, 1.2fr) minmax(280px, 1fr);
+  }
+}
+
+@media (max-width: 860px) {
+  .fv-main {
+    grid-template-columns: 1fr;
+  }
+
+  .fv-main > .fv-code {
+    min-height: 40vh;
+  }
+
+  .fv-column {
+    grid-template-rows: auto auto;
+  }
+
+  .fv-app {
+    height: auto;
+  }
+}

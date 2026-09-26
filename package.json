@@ -15,10 +15,15 @@
     "typecheck": "tsc -b packages/trace-fixtures --dry || tsc -b packages/trace-fixtures",
     "test": "vitest run",
     "dev": "pnpm --filter @flow-view/web dev",
-    "verify": "pnpm schema:check && pnpm typecheck && pnpm test"
+    "test:py": "PYTHONPATH=packages/trace-schema/python python3 -m pytest packages/trace-schema/python/tests -q",
+    "verify": "pnpm schema:check && pnpm typecheck && pnpm test && pnpm --filter @flow-view/web build",
+    "verify:ui": "bash scripts/verify-ui.sh"
   },
   "devDependencies": {
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
   }
 }

@@ -1,0 +1,30 @@
+{
+  "name": "@flow-view/web",
+  "version": "0.1.0",
+  "description": "flow_view user interface, shared by the Lite and Full profiles",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "@flow-view/renderers": "workspace:*",
+    "@flow-view/trace-fixtures": "workspace:*",
+    "@flow-view/trace-schema": "workspace:*",
+    "@flow-view/trace-store": "workspace:*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7"
+  }
+}

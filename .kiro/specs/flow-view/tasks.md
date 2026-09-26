@@ -16,17 +16,20 @@ Build the trace format and the UI *before* anything can produce a real trace, an
 hand-written fixture traces. If the schema is wrong, this is where it is cheap to find out — after
 four adapters exist, it is not.
 
-- [ ] 0.1 Monorepo scaffold: pnpm workspaces, `uv` project, TypeScript config, lint/format, CI skeleton
-- [ ] 0.2 `packages/trace-schema`: JSON Schema for every event in `trace-schema.md`
-- [ ] 0.3 Code generation: TypeScript types and Python dataclasses from the schema, with a CI check that fails if generated output is stale
-- [ ] 0.4 Schema validator usable from both languages
-- [ ] 0.5 Hand-authored fixture traces: assignment, branch, loop, function call, recursion, linked list build, tree insert, aliasing, exception, stdin
-- [ ] 0.6 `packages/trace-store`: append, `stateAt`, `next`/`prev`, `seek`, snapshot handling
-- [ ] 0.7 TraceStore property tests: forward-to-end then inverse-to-zero restores initial state exactly, for every fixture
-- [ ] 0.8 UI shell: layout, playback controls, keyboard bindings, fixture picker
+- [x] 0.1 Monorepo scaffold: pnpm workspaces, `uv` project, TypeScript config, lint/format, CI skeleton
+- [x] 0.2 `packages/trace-schema`: JSON Schema for every event in `trace-schema.md`
+- [x] 0.3 Code generation: TypeScript types and Python dataclasses from the schema, with a CI check that fails if generated output is stale
+- [x] 0.4 Schema validator usable from both languages
+- [x] 0.5 Hand-authored fixture traces: assignment, branch, loop, function call, recursion, linked list build, tree insert, aliasing, exception, stdin
+- [x] 0.6 `packages/trace-store`: append, `stateAt`, `next`/`prev`, `seek`, snapshot handling
+- [x] 0.7 TraceStore property tests: forward-to-end then inverse-to-zero restores initial state exactly, for every fixture
+- [x] 0.8 UI shell: layout, playback controls, keyboard bindings, fixture picker
 
-**Gate:** load every fixture in the browser and step forward and backward through all of them with
-correct state at each step. Invertibility tests pass. Generated types match the schema in CI.
+**Gate passed.** All 17 fixtures load in a browser and step forward and backward with correct
+state at every event boundary; `scripts/verify-ui.sh` drives the whole corpus and asserts each one
+rewinds to a clean initial state, with zero console errors. 153 TypeScript tests and 31 Python tests
+pass, including the invertibility property and forward/backward seek agreement. `pnpm schema:check`
+fails the build if generated artifacts go stale.
 
 ---
 

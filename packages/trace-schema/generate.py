@@ -585,6 +585,65 @@ def gen_python(m: Model) -> str:
     L.append("    session: Session")
     L.append("    events: list[TraceEvent]")
     L.append("")
+
+    # A machine-readable description of the same contract, embedded so the Python validator needs
+    # neither the model file on disk nor a JSON Schema library. Adapters must stay dependency-free,
+    # and a validator that only works from a source checkout is a validator nobody runs.
+    L.append("")
+    L.append("ENUM_VALUES: dict[str, tuple[str, ...]] = {")
+    for name, e in m.enums.items():
+        vals = ", ".join(json.dumps(v) for v in e["values"])
+        L.append(f"    {json.dumps(name)}: ({vals},),")
+    L.append("}")
+    L.append('"""Permitted values for each enum, by enum name."""')
+    L.append("")
+
+    L.append("EVENT_SPEC: dict[str, dict[str, dict[str, object]]] = {")
+    for name in m.events:
+        fields = {**m.common, **m.event_fields(name)}
+        L.append(f"    {json.dumps(name)}: {{")
+        for fname, f in fields.items():
+            required = "False" if f["opt"] or fname == "t" else "True"
+            L.append(
+                f"        {json.dumps(fname)}: "
+                f'{{"type": {json.dumps(f["t"])}, "required": {required}}},'
+            )
+        L.append("    },")
+    L.append("}")
+    L += py_doc(
+        "Field type and requiredness for every event, including the common envelope. The type "
+        "strings use the model's own notation: scalars, `enum:Name`, `array:Type`, `map:Type`, "
+        "or a struct name.",
+        "",
+    )
+    L.append("")
+
+    L.append("STRUCT_SPEC: dict[str, dict[str, dict[str, object]]] = {")
+    for name in m.structs:
+        L.append(f"    {json.dumps(name)}: {{")
+        for fname, f in m.struct_fields(name).items():
+            required = "False" if f["opt"] else "True"
+            L.append(
+                f"        {json.dumps(fname)}: "
+                f'{{"type": {json.dumps(f["t"])}, "required": {required}}},'
+            )
+        L.append("    },")
+    L.append("}")
+    L.append('"""Field type and requiredness for every struct."""')
+    L.append("")
+
+    L.append("VALUE_VARIANTS: dict[str, tuple[str, ...]] = {")
+    for name, u in m.unions.items():
+        for vname, v in u["variants"].items():
+            keys = ", ".join(json.dumps(k) for k in v["fields"])
+            L.append(f"    {json.dumps(vname)}: ({keys},),")
+    L.append("}")
+    L += py_doc(
+        "Variant name to its field names. The first field of each variant is its discriminator, "
+        "and exactly one discriminator may be present in a value.",
+        "",
+    )
+    L.append("")
     return "\n".join(L)
 
 
