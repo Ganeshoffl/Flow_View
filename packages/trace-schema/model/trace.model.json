@@ -1,0 +1,564 @@
+{
+  "schema_id": "flow_view/trace@1",
+  "version_major": 1,
+  "doc": "The Universal Trace. Single source of truth for the contract between execution adapters and visualization renderers. Generated artifacts live in ../generated and are never hand-edited. Normative prose: .kiro/specs/flow-view/trace-schema.md",
+
+  "enums": {
+    "Language": {
+      "doc": "Languages flow_view can trace.",
+      "values": ["python", "javascript", "c", "cpp", "java"]
+    },
+    "Profile": {
+      "doc": "Deployment profile that produced the trace.",
+      "values": ["lite", "full"]
+    },
+    "RunStatus": {
+      "doc": "How the run ended. Every status other than ok/error means the trace is truncated but still valid and replayable.",
+      "values": ["ok", "error", "timeout", "step_limit", "memory_limit", "killed"]
+    },
+    "BranchKind": {
+      "doc": "Syntactic construct that made a control-flow decision.",
+      "values": ["if", "elif", "else", "while", "for", "switch", "ternary", "guard"]
+    },
+    "BranchOutcome": {
+      "doc": "Which way control actually went. Derived from observed execution, never by re-evaluating the condition.",
+      "values": ["taken", "not_taken"]
+    },
+    "LoopExitReason": {
+      "doc": "Why a loop stopped iterating.",
+      "values": ["condition", "break", "return", "exception"]
+    },
+    "JumpKind": {
+      "doc": "Non-linear control transfer.",
+      "values": ["break", "continue", "goto"]
+    },
+    "FrameKind": {
+      "doc": "Nature of a call frame. 'library' marks an opaque call whose interior is deliberately not traced.",
+      "values": ["user", "library", "builtin", "method", "constructor"]
+    },
+    "FramePopReason": {
+      "doc": "Why a frame was popped.",
+      "values": ["return", "implicit", "exception"]
+    },
+    "VarScope": {
+      "doc": "Binding scope of a variable.",
+      "values": ["local", "param", "global", "closure", "static", "field"]
+    },
+    "ObjKind": {
+      "doc": "Renderer hint for a heap object. Describes representation, not semantics.",
+      "values": [
+        "list", "array", "tuple", "string", "bytes", "set", "map", "object",
+        "instance", "struct", "function", "closure", "class", "module",
+        "iterator", "generator", "exception", "pointer", "opaque"
+      ]
+    },
+    "ObjSetOp": {
+      "doc": "Kind of mutation. Distinguishes replacing element 3 from inserting at 3, which animate differently.",
+      "values": ["set", "insert", "append", "delete"]
+    },
+    "MemRegion": {
+      "doc": "Native memory region.",
+      "values": ["heap", "stack"]
+    },
+    "AllocVia": {
+      "doc": "Native allocation mechanism.",
+      "values": ["malloc", "calloc", "realloc", "new", "new_array", "alloca"]
+    },
+    "FreeVia": {
+      "doc": "Native deallocation mechanism.",
+      "values": ["free", "delete", "delete_array", "scope_exit"]
+    },
+    "StdinSource": {
+      "doc": "Whether input came from a human at run time or was supplied up front.",
+      "values": ["interactive", "prefilled"]
+    },
+    "MetricName": {
+      "doc": "Counters surfaced in the metrics view.",
+      "values": ["comparison", "swap", "assignment", "call", "iteration", "allocation", "read", "write"]
+    },
+    "Shape": {
+      "doc": "Inferred data structure shape. Advisory; always user-overridable. 'unknown' renders as a generic object graph.",
+      "values": [
+        "array", "matrix", "string", "tuple", "set", "map",
+        "linked_list", "doubly_linked_list", "circular_linked_list",
+        "binary_tree", "bst", "nary_tree",
+        "directed_graph", "undirected_graph",
+        "stack", "queue", "deque",
+        "object", "unknown"
+      ]
+    },
+    "Confidence": {
+      "doc": "How much to trust an inference.",
+      "values": ["high", "medium", "low"]
+    },
+    "NoteLevel": {
+      "doc": "Severity of an adapter diagnostic shown to the user.",
+      "values": ["info", "warn"]
+    }
+  },
+
+  "unions": {
+    "Value": {
+      "doc": "A value held by a variable or heap slot. Never a nested object: aggregates are referenced by id so that aliasing and cycles are representable, and so mutating a shared object is one event rather than many.",
+      "discriminator_note": "Exactly one variant key must be present.",
+      "variants": {
+        "prim": {
+          "doc": "An immediate value. Integers outside IEEE-754 safe range are strings with bigint set. NaN and infinities are the strings 'nan', 'inf', '-inf'.",
+          "fields": {
+            "prim": { "t": "primitive", "doc": "null, bool, int, float, or string." },
+            "bigint": { "t": "bool", "opt": true, "doc": "Set when prim is a string carrying an integer too large for a double." },
+            "truncated": { "t": "int", "opt": true, "doc": "Full original length, when a long string was shortened." }
+          }
+        },
+        "ref": {
+          "doc": "A reference to a heap object.",
+          "fields": {
+            "ref": { "t": "int", "doc": "Heap object id." }
+          }
+        },
+        "addr": {
+          "doc": "A native pointer (C/C++).",
+          "fields": {
+            "addr": { "t": "string", "doc": "Hex address, e.g. '0x7ffd1a2b'." },
+            "type": { "t": "string", "doc": "Declared pointee type, e.g. 'int*'." },
+            "dangling": { "t": "bool", "opt": true, "doc": "Target memory has been freed." }
+          }
+        },
+        "unavailable": {
+          "doc": "The runtime could not report this value. Deliberate: an honest gap beats a fabricated number.",
+          "fields": {
+            "unavailable": { "t": "string", "doc": "Human-readable reason, e.g. 'optimized out'." }
+          }
+        }
+      }
+    }
+  },
+
+  "structs": {
+    "Arg": {
+      "doc": "One argument at a call site.",
+      "fields": {
+        "name": "string",
+        "value": "Value"
+      }
+    },
+    "SourceFile": {
+      "doc": "A source file participating in the run.",
+      "fields": {
+        "path": "string",
+        "sha256": "string",
+        "line_count": "int"
+      }
+    },
+    "EntryPoint": {
+      "doc": "Where execution began.",
+      "fields": {
+        "path": "string",
+        "line": "int"
+      }
+    },
+    "Limits": {
+      "doc": "Resource bounds applied to the run. Present so the UI can explain a truncated trace.",
+      "fields": {
+        "max_steps": "int",
+        "wall_ms": "int",
+        "memory_mb": "int",
+        "output_bytes": "int"
+      }
+    },
+    "Session": {
+      "doc": "Trace header. Sent once, before any events.",
+      "fields": {
+        "id": "string",
+        "language": { "t": "enum:Language" },
+        "language_version": "string",
+        "adapter_version": "string",
+        "profile": { "t": "enum:Profile" },
+        "source_files": { "t": "array:SourceFile" },
+        "entry": { "t": "EntryPoint" },
+        "limits": { "t": "Limits" },
+        "started_at": { "t": "string", "doc": "ISO 8601 UTC." },
+        "guards_active": {
+          "t": "array:string",
+          "opt": true,
+          "doc": "Sandbox guards actually in force on this platform. The UI reports these verbatim rather than implying protection that is not present."
+        }
+      }
+    },
+    "StackEntry": {
+      "doc": "One line of a rendered stack trace.",
+      "fields": {
+        "func": "string",
+        "path": "string",
+        "line": "int"
+      }
+    },
+    "CollapseEffect": {
+      "doc": "Net before/after state for one slot touched inside a folded span. This is what makes a collapse event invertible.",
+      "fields": {
+        "kind": { "t": "string", "doc": "'var' or 'obj'." },
+        "frame": { "t": "int", "opt": true, "doc": "Owning frame, for kind 'var'." },
+        "obj": { "t": "int", "opt": true, "doc": "Owning object, for kind 'obj'." },
+        "key": { "t": "string", "doc": "Variable name, or heap key rendered as a string." },
+        "before": { "t": "Value", "opt": true },
+        "after": { "t": "Value", "opt": true }
+      }
+    },
+    "FrameState": {
+      "doc": "A frame as captured in a snapshot.",
+      "fields": {
+        "frame": "int",
+        "func": "string",
+        "path": "string",
+        "line": "int",
+        "kind": { "t": "enum:FrameKind" },
+        "caller": { "t": "int", "opt": true },
+        "recursion_depth": "int",
+        "bindings": { "t": "map:Value", "doc": "Variable name to current value." },
+        "scopes": { "t": "map:string", "opt": true, "doc": "Variable name to its VarScope." }
+      }
+    },
+    "ObjectState": {
+      "doc": "A heap object as captured in a snapshot.",
+      "fields": {
+        "obj": "int",
+        "kind": { "t": "enum:ObjKind" },
+        "type_name": "string",
+        "slots": { "t": "map:Value", "doc": "Key (index or field, rendered as a string) to value." },
+        "order": { "t": "array:string", "opt": true, "doc": "Explicit slot ordering where it is meaningful, as for lists and arrays." },
+        "length": { "t": "int", "opt": true },
+        "addr": { "t": "string", "opt": true },
+        "shape": { "t": "enum:Shape", "opt": true },
+        "summary": { "t": "string", "opt": true }
+      }
+    },
+    "LoopState": {
+      "doc": "An active loop region as captured in a snapshot.",
+      "fields": {
+        "region": "int",
+        "line_start": "int",
+        "line_end": "int",
+        "iteration": "int"
+      }
+    },
+    "StateSnapshot": {
+      "doc": "Program state at a point in the trace. Delta-encoded against base_seq unless full is set: a whole-heap snapshot every few hundred steps would outweigh the events it exists to accelerate.",
+      "fields": {
+        "full": { "t": "bool", "doc": "True for a keyframe carrying complete state; false for a delta." },
+        "base_seq": { "t": "int", "opt": true, "doc": "Snapshot this delta applies to. Absent when full." },
+        "frames": { "t": "array:FrameState" },
+        "frame_order": { "t": "array:int", "doc": "Frame ids, outermost first." },
+        "objects": { "t": "array:ObjectState" },
+        "removed_frames": { "t": "array:int", "opt": true, "doc": "Frames gone since base_seq, for deltas." },
+        "removed_objects": { "t": "array:int", "opt": true, "doc": "Objects gone since base_seq, for deltas." },
+        "loops": { "t": "array:LoopState", "opt": true },
+        "metrics": { "t": "map:int", "opt": true, "doc": "Metric name to running total." }
+      }
+    }
+  },
+
+  "common_fields": {
+    "seq": { "t": "int", "doc": "Monotonic from 0. Identity of a point in time." },
+    "t": { "t": "string", "doc": "Event type." },
+    "step": { "t": "int", "opt": true, "doc": "Step ordinal. Present on events the user can land on; absent on bookkeeping events." },
+    "frame": { "t": "int", "opt": true, "doc": "Owning frame id." },
+    "line": { "t": "int", "opt": true, "doc": "1-based source line." },
+    "path": { "t": "string", "opt": true, "doc": "Source file. Omitted when it is the entry file." },
+    "ms": { "t": "float", "opt": true, "doc": "Milliseconds since run start, for the timeline view." }
+  },
+
+  "events": {
+    "run_start": {
+      "group": "lifecycle",
+      "doc": "First event of every trace.",
+      "fields": {}
+    },
+    "run_end": {
+      "group": "lifecycle",
+      "doc": "Always emitted, including on limit breach. A truncated trace is a valid trace.",
+      "fields": {
+        "status": { "t": "enum:RunStatus" },
+        "exit_code": { "t": "int", "opt": true },
+        "steps": "int",
+        "duration_ms": "float"
+      }
+    },
+
+    "step_line": {
+      "group": "stepping",
+      "doc": "Execution arrived at a line. The atom of playback.",
+      "steppable": true,
+      "fields": {}
+    },
+    "branch": {
+      "group": "stepping",
+      "doc": "A control-flow decision. outcome comes from observed execution; the condition is never re-evaluated, since doing so could fire side effects and change the program being visualized.",
+      "steppable": true,
+      "fields": {
+        "kind": { "t": "enum:BranchKind" },
+        "expr": { "t": "string", "doc": "Source text of the condition, read from the AST." },
+        "outcome": { "t": "enum:BranchOutcome" },
+        "target_line": { "t": "int", "opt": true },
+        "result": {
+          "t": "primitive",
+          "opt": true,
+          "doc": "Evaluated value, only where the runtime surfaces it for free. Null for settrace-based Python. No view may depend on it."
+        }
+      }
+    },
+    "loop_enter": {
+      "group": "stepping",
+      "doc": "Opens a loop region.",
+      "fields": {
+        "region": "int",
+        "line_start": "int",
+        "line_end": "int"
+      }
+    },
+    "loop_iter": {
+      "group": "stepping",
+      "doc": "One iteration boundary. Basis for collapsing.",
+      "fields": {
+        "region": "int",
+        "i": "int"
+      }
+    },
+    "loop_exit": {
+      "group": "stepping",
+      "doc": "Closes a loop region.",
+      "fields": {
+        "region": "int",
+        "iterations": "int",
+        "reason": { "t": "enum:LoopExitReason" }
+      }
+    },
+    "jump": {
+      "group": "stepping",
+      "doc": "Non-linear control transfer.",
+      "steppable": true,
+      "fields": {
+        "kind": { "t": "enum:JumpKind" },
+        "target_line": { "t": "int", "opt": true }
+      }
+    },
+
+    "frame_push": {
+      "group": "frames",
+      "doc": "A call began. Frame ids are unique for the whole run and never reused, so recursion yields a distinct frame per depth.",
+      "steppable": true,
+      "fields": {
+        "func": "string",
+        "args": { "t": "array:Arg" },
+        "caller": { "t": "int", "opt": true },
+        "kind": { "t": "enum:FrameKind" },
+        "recursion_depth": "int"
+      }
+    },
+    "frame_pop": {
+      "group": "frames",
+      "doc": "A call returned.",
+      "steppable": true,
+      "fields": {
+        "return_value": { "t": "Value", "opt": true },
+        "reason": { "t": "enum:FramePopReason" }
+      }
+    },
+
+    "var_set": {
+      "group": "variables",
+      "doc": "A variable was bound or rebound. prev is what it held before, which is what makes the event invertible.",
+      "fields": {
+        "name": "string",
+        "value": "Value",
+        "prev": { "t": "Value", "opt": true, "doc": "Absent when the name did not previously exist." },
+        "scope": { "t": "enum:VarScope" },
+        "declared": { "t": "bool", "opt": true, "doc": "True on first binding." }
+      }
+    },
+    "var_del": {
+      "group": "variables",
+      "doc": "A binding disappeared: scope exit, explicit delete, block end.",
+      "fields": {
+        "name": "string",
+        "prev": "Value"
+      }
+    },
+
+    "obj_new": {
+      "group": "heap",
+      "doc": "A heap object came into existence.",
+      "fields": {
+        "obj": "int",
+        "kind": { "t": "enum:ObjKind" },
+        "type_name": "string",
+        "size": { "t": "int", "opt": true },
+        "addr": { "t": "string", "opt": true, "doc": "Real address for C/C++; absent for managed languages." },
+        "summary": { "t": "string", "opt": true },
+        "length": { "t": "int", "opt": true }
+      }
+    },
+    "obj_set": {
+      "group": "heap",
+      "doc": "A slot of a heap object changed.",
+      "fields": {
+        "obj": "int",
+        "key": { "t": "primitive", "doc": "Index for sequences; field name or map key otherwise." },
+        "value": "Value",
+        "prev": { "t": "Value", "opt": true },
+        "op": { "t": "enum:ObjSetOp" }
+      }
+    },
+    "obj_resize": {
+      "group": "heap",
+      "doc": "Bulk length change: clear, extend, array reallocation.",
+      "fields": {
+        "obj": "int",
+        "length": "int",
+        "prev_length": "int",
+        "cleared": { "t": "array:string", "opt": true, "doc": "Keys removed by the resize, so the event stays invertible." },
+        "cleared_values": { "t": "array:Value", "opt": true, "doc": "Values those keys held, positionally aligned with cleared." }
+      }
+    },
+    "obj_free": {
+      "group": "heap",
+      "doc": "Explicit deallocation. C/C++ only; managed languages do not report collection.",
+      "fields": {
+        "obj": "int"
+      }
+    },
+
+    "mem_alloc": {
+      "group": "native",
+      "doc": "Native allocation.",
+      "fields": {
+        "addr": "string",
+        "size": "int",
+        "region": { "t": "enum:MemRegion" },
+        "via": { "t": "enum:AllocVia" }
+      }
+    },
+    "mem_free": {
+      "group": "native",
+      "doc": "Native deallocation.",
+      "fields": {
+        "addr": "string",
+        "via": { "t": "enum:FreeVia" }
+      }
+    },
+    "ptr_set": {
+      "group": "native",
+      "doc": "A pointer was retargeted. dangling is the highest-value teaching signal in C: it is what draws the broken arrow explaining a use-after-free.",
+      "fields": {
+        "name": { "t": "string", "opt": true },
+        "obj": { "t": "int", "opt": true },
+        "to_addr": "string",
+        "prev_addr": { "t": "string", "opt": true },
+        "valid": "bool",
+        "dangling": "bool"
+      }
+    },
+
+    "stdout": {
+      "group": "io",
+      "doc": "Standard output, attributed to the step that produced it.",
+      "fields": { "text": "string" }
+    },
+    "stderr": {
+      "group": "io",
+      "doc": "Standard error, attributed to the step that produced it.",
+      "fields": { "text": "string" }
+    },
+    "stdin_request": {
+      "group": "io",
+      "doc": "Execution is blocked awaiting input.",
+      "fields": {
+        "prompt": { "t": "string", "opt": true }
+      }
+    },
+    "stdin_response": {
+      "group": "io",
+      "doc": "Input that was supplied. Recorded so replay is deterministic without a human.",
+      "fields": {
+        "text": "string",
+        "source": { "t": "enum:StdinSource" }
+      }
+    },
+
+    "exception_raise": {
+      "group": "errors",
+      "doc": "An exception was raised.",
+      "steppable": true,
+      "fields": {
+        "type": "string",
+        "message": "string",
+        "obj": { "t": "int", "opt": true }
+      }
+    },
+    "exception_catch": {
+      "group": "errors",
+      "doc": "An exception was handled.",
+      "steppable": true,
+      "fields": {
+        "handler_line": "int"
+      }
+    },
+    "exception_uncaught": {
+      "group": "errors",
+      "doc": "An exception terminated the program. Terminal, but the trace stays replayable.",
+      "fields": {
+        "type": "string",
+        "message": "string",
+        "stack": { "t": "array:StackEntry" }
+      }
+    },
+
+    "metric": {
+      "group": "analysis",
+      "doc": "Counter increment for the metrics view.",
+      "fields": {
+        "name": { "t": "enum:MetricName" },
+        "delta": "int",
+        "region": { "t": "int", "opt": true }
+      }
+    },
+    "structure_hint": {
+      "group": "analysis",
+      "doc": "Inferred shape of an object. Advisory, overridable, and carries its evidence so a wrong guess is explainable rather than mysterious.",
+      "fields": {
+        "obj": "int",
+        "shape": { "t": "enum:Shape" },
+        "confidence": { "t": "enum:Confidence" },
+        "evidence": { "t": "array:string", "doc": "Human-readable reasons, shown in the UI." },
+        "root": { "t": "bool", "opt": true, "doc": "True when this object is the entry point of the structure." }
+      }
+    },
+    "snapshot": {
+      "group": "analysis",
+      "doc": "Periodic state capture bounding how far a seek must replay.",
+      "fields": {
+        "state": { "t": "StateSnapshot" }
+      }
+    },
+    "collapse": {
+      "group": "analysis",
+      "doc": "A folded span of repeated loop iterations, represented as one composite invertible step. Carries net before/after state so folding cannot break the invertibility guarantee.",
+      "steppable": true,
+      "fields": {
+        "region": "int",
+        "from_seq": "int",
+        "to_seq": "int",
+        "iterations": "int",
+        "effects": { "t": "array:CollapseEffect" },
+        "metrics": { "t": "map:int", "opt": true }
+      }
+    },
+    "note": {
+      "group": "analysis",
+      "doc": "Adapter diagnostic surfaced to the user, such as a step budget being reached or a frame whose locals could not be read.",
+      "fields": {
+        "level": { "t": "enum:NoteLevel" },
+        "text": "string"
+      }
+    }
+  }
+}

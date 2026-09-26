@@ -74,7 +74,16 @@ Only `seq` and `t` are universally required.
 | Type | Payload | Notes |
 |---|---|---|
 | `step_line` | — | Execution arrived at `line` in `frame`. The atom of playback. |
-| `branch` | `kind`: `if` \| `elif` \| `else` \| `while` \| `for` \| `switch` \| `ternary` \| `guard`, `expr`: string, `result`: bool \| string, `taken`: bool, `target_line`: int? | Why control went where it did. Drives both the flow view and narration. `expr` is the source text of the condition; `result` is its evaluated value. |
+| `branch` | `kind`: `if` \| `elif` \| `else` \| `while` \| `for` \| `switch` \| `ternary` \| `guard`, `expr`: string, `outcome`: `taken` \| `not_taken`, `target_line`: int?, `result`: bool \| string \| null | Why control went where it did. Drives both the flow view and narration. `expr` is the source text of the condition, obtained from the AST. |
+
+**`branch.outcome` is derived from observed control flow — never by evaluating the condition.**
+An adapter determines the outcome by seeing where execution actually went (into the body, or past it),
+because re-evaluating a user expression to learn its value could trigger side effects and change the
+behaviour of the program being visualized. `if queue.pop():` must never be evaluated twice.
+
+`result` is populated only where the runtime surfaces the value for free — AST-instrumented
+JavaScript can capture it, `settrace`-based Python cannot. It is `null` otherwise, and no view may
+depend on it. `outcome` is always present, and is sufficient for both narration and the flow view.
 | `loop_enter` | `region`: int, `line_start`, `line_end` | Opens a loop region. |
 | `loop_iter` | `region`: int, `i`: int | One iteration boundary. Basis for collapsing (§7). |
 | `loop_exit` | `region`: int, `iterations`: int, `reason`: `condition` \| `break` \| `return` \| `exception` | Why the loop ended. |
@@ -191,20 +200,34 @@ Long loops are folded so the trace stays usable, and folding must work while str
 
 The collapser keeps a sliding window per active loop region. It retains the first *K* and last *K*
 iterations in full detail (default *K* = 3). Iterations in between are dropped from the event stream
-and replaced by an accumulating `collapse` record holding the iteration count and summed metric
-deltas. State correctness is preserved because the collapser also retains the *net* `var_set` and
-`obj_set` effects of the folded span — the user loses the play-by-play, never the resulting state.
+and replaced by a single `collapse` event.
 
-Expanding a collapsed region in the UI is a re-run of just that region with folding disabled for it.
+**A `collapse` event is one composite, invertible step.** It carries the net effect of the folded
+span: for every variable and every heap slot the span touched, the value before the span and the value
+after it, plus the iteration count and summed metric deltas. Applying it forward jumps state to the
+end of the span; applying its inverse restores state to the beginning. This is what keeps folding
+compatible with the invertibility guarantee in §8 — without the net-effect record, backward stepping
+across a fold would be reconstructing state from events that no longer exist.
+
+The user loses the play-by-play inside a fold, never the resulting state. Expanding a collapsed region
+in the UI is a re-run of just that region with folding disabled for it.
 
 ## 8. Snapshots and reverse stepping
 
 Backward stepping applies inverse events, which works because every mutation carries `prev`.
 Seeking to an arbitrary point uses the nearest preceding `snapshot`, then replays forward.
 
-A `StateSnapshot` contains the frame stack with all bindings, every live heap object with its
-contents, the active loop regions, and metric totals. Snapshots are emitted every 500 steps by
-default, tuned against trace size: more snapshots cost bytes, fewer cost seek latency.
+A `StateSnapshot` contains the frame stack with all bindings, the live heap, the active loop regions,
+and metric totals.
+
+Snapshots are **delta-encoded against the previous snapshot**, not written whole. A full snapshot of a
+10,000-object heap is megabytes, and emitting that every 500 steps would make snapshots the dominant
+cost of the trace — larger than the events they exist to accelerate. Each snapshot therefore records
+only what changed since the last one, with a `base_seq` pointing at its predecessor and a periodic
+`full: true` keyframe to bound how far a cold seek must walk.
+
+The interval adapts to heap size rather than being fixed: cheap state gets frequent snapshots, large
+heaps get fewer. The tuning target is the §NFR-1 seek budget at the lowest byte cost that meets it.
 
 Both directions are pure state reconstruction. **The program is never re-executed for playback**,
 which is what makes back-stepping instant and safe for programs with side effects.

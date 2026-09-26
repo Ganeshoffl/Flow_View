@@ -21,8 +21,9 @@ apps/web/dist/
 apps/web-lite/dist/
 packages/*/dist/
 
-# Generated from packages/trace-schema — never edited by hand
-packages/trace-schema/generated/
+# NOTE: packages/trace-schema/generated/ is deliberately committed, not ignored.
+# The repo must be usable without running codegen, and a schema change should show up as a
+# reviewable diff in the generated types. `pnpm schema:check` fails the build if it goes stale.
 
 # Vendored Pyodide runtime (fetched at build time)
 apps/web/public/pyodide/

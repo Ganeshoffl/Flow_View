@@ -35,10 +35,16 @@ correct state at each step. Invertibility tests pass. Generated types match the 
 The first real adapter. Python first because `settrace` yields the richest data for the least work,
 which makes it the fastest way to discover whether the schema survives contact with a real runtime.
 
+- [ ] 1.0 **Benchmark spike first — heap walk cost.** Measure per-step cost of reachability-scoped
+      object walking at 100 / 1k / 10k live objects. Decide between full scoped walking and
+      locals-bounded walking *on evidence*, before building the adapter around either. This is the
+      largest unproven assumption in the design; it gets settled by measurement, not argument.
 - [ ] 1.1 `flow_view_tracer`: line stepping, frame push/pop, `var_set` with `prev` (pure Python, zero dependencies)
-- [ ] 1.2 Heap registry: identity-keyed object ids, reachability-scoped walk, mutation diffing
+- [ ] 1.2 Heap registry: identity-keyed object ids, walk strategy chosen in 1.0, mutation diffing
 - [ ] 1.3 Opaque library boundary by source-path test
-- [ ] 1.4 Branch events with condition source text and evaluated result
+- [ ] 1.4 Branch events: condition source text from the AST, outcome derived from observed control flow.
+      **The user's condition is never re-evaluated** — that could fire side effects and change the
+      program being visualized.
 - [ ] 1.5 Metric events: comparisons, swaps, assignments, calls, iterations
 - [ ] 1.6 Step budget, output cap, and truncation reported as a `note` plus a `run_end` status
 - [ ] 1.7 Exception capture including uncaught, with the trace preserved
@@ -96,10 +102,12 @@ recognizably quadratic comparison curve, and the timeline correctly seeks to any
 Make long programs survivable, while streaming.
 
 - [ ] 4.1 Streaming loop collapser: retain first and last *K* iterations, fold the middle
-- [ ] 4.2 Net-effect preservation across folded spans, so state stays exact even where detail is dropped
+- [ ] 4.2 Folded spans emitted as **single composite invertible events** carrying net before/after state,
+      so collapsing cannot break the invertibility guarantee the TraceStore depends on
 - [ ] 4.3 Expand-on-demand by re-running a single region with folding disabled
 - [ ] 4.4 TraceStore retention policy: detail near the playhead, summaries far from it
-- [ ] 4.5 Snapshot interval tuning measured against trace size and seek latency
+- [ ] 4.5 Delta-encoded snapshots with periodic full keyframes; interval adapted to heap size, tuned
+      against trace bytes versus seek latency
 - [ ] 4.6 Adversarial corpus: million-iteration loops, deep recursion, wide heaps, huge strings
 
 **Gate:** a one-million-iteration loop traces to completion, stays responsive, reports accurate final

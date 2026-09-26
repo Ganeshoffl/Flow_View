@@ -327,7 +327,7 @@ flow_view never installs a toolchain itself. It detects, reports, and explains.
 |---|---|
 | Trace volume from long runs | Streaming collapse, step budget, retention policy, snapshot tuning — all specified, all tested against adversarial programs in the conformance corpus |
 | `settrace` overhead | `sys.monitoring` fast path on 3.12+; budget enforced inside the tracer so a slow trace still terminates |
-| Heap re-walk cost per step | Reachability-scoped walk with generation counters; measured against 10k-object programs before the design is accepted |
+| **Heap re-walk cost per step — the largest unproven assumption in this design** | Phase 1 opens with a measured benchmark, not more design. If reachability-scoped walking with generation counters is not fast enough, the fallback is bounding the walk to objects within a few references of live locals — which is all any view displays anyway. Decided by measurement before the adapter is built around it. |
 | Wrong structure inference | Confidence + visible evidence + user override + generic fallback; inference can be wrong but can never hide data |
 | gdb absent (it is absent in the current dev sandbox) | Capability detection with an actionable message; C/C++ is the third adapter, so the tool is useful long before it lands |
 | Docker unavailable (also absent in the dev sandbox) | Subprocess is the default path, Docker is opt-in — the dependency is inverted so the common case needs nothing |

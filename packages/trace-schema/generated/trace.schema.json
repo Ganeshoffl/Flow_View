@@ -1,0 +1,2375 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flow-view.dev/schema/trace/v1.json",
+  "title": "flow_view Universal Trace",
+  "description": "The Universal Trace. Single source of truth for the contract between execution adapters and visualization renderers. Generated artifacts live in ../generated and are never hand-edited. Normative prose: .kiro/specs/flow-view/trace-schema.md",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "flow_view/trace@1"
+    },
+    "session": {
+      "$ref": "#/$defs/Session"
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Event"
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "session",
+    "events"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "Language": {
+      "description": "Languages flow_view can trace.",
+      "enum": [
+        "python",
+        "javascript",
+        "c",
+        "cpp",
+        "java"
+      ]
+    },
+    "Profile": {
+      "description": "Deployment profile that produced the trace.",
+      "enum": [
+        "lite",
+        "full"
+      ]
+    },
+    "RunStatus": {
+      "description": "How the run ended. Every status other than ok/error means the trace is truncated but still valid and replayable.",
+      "enum": [
+        "ok",
+        "error",
+        "timeout",
+        "step_limit",
+        "memory_limit",
+        "killed"
+      ]
+    },
+    "BranchKind": {
+      "description": "Syntactic construct that made a control-flow decision.",
+      "enum": [
+        "if",
+        "elif",
+        "else",
+        "while",
+        "for",
+        "switch",
+        "ternary",
+        "guard"
+      ]
+    },
+    "BranchOutcome": {
+      "description": "Which way control actually went. Derived from observed execution, never by re-evaluating the condition.",
+      "enum": [
+        "taken",
+        "not_taken"
+      ]
+    },
+    "LoopExitReason": {
+      "description": "Why a loop stopped iterating.",
+      "enum": [
+        "condition",
+        "break",
+        "return",
+        "exception"
+      ]
+    },
+    "JumpKind": {
+      "description": "Non-linear control transfer.",
+      "enum": [
+        "break",
+        "continue",
+        "goto"
+      ]
+    },
+    "FrameKind": {
+      "description": "Nature of a call frame. 'library' marks an opaque call whose interior is deliberately not traced.",
+      "enum": [
+        "user",
+        "library",
+        "builtin",
+        "method",
+        "constructor"
+      ]
+    },
+    "FramePopReason": {
+      "description": "Why a frame was popped.",
+      "enum": [
+        "return",
+        "implicit",
+        "exception"
+      ]
+    },
+    "VarScope": {
+      "description": "Binding scope of a variable.",
+      "enum": [
+        "local",
+        "param",
+        "global",
+        "closure",
+        "static",
+        "field"
+      ]
+    },
+    "ObjKind": {
+      "description": "Renderer hint for a heap object. Describes representation, not semantics.",
+      "enum": [
+        "list",
+        "array",
+        "tuple",
+        "string",
+        "bytes",
+        "set",
+        "map",
+        "object",
+        "instance",
+        "struct",
+        "function",
+        "closure",
+        "class",
+        "module",
+        "iterator",
+        "generator",
+        "exception",
+        "pointer",
+        "opaque"
+      ]
+    },
+    "ObjSetOp": {
+      "description": "Kind of mutation. Distinguishes replacing element 3 from inserting at 3, which animate differently.",
+      "enum": [
+        "set",
+        "insert",
+        "append",
+        "delete"
+      ]
+    },
+    "MemRegion": {
+      "description": "Native memory region.",
+      "enum": [
+        "heap",
+        "stack"
+      ]
+    },
+    "AllocVia": {
+      "description": "Native allocation mechanism.",
+      "enum": [
+        "malloc",
+        "calloc",
+        "realloc",
+        "new",
+        "new_array",
+        "alloca"
+      ]
+    },
+    "FreeVia": {
+      "description": "Native deallocation mechanism.",
+      "enum": [
+        "free",
+        "delete",
+        "delete_array",
+        "scope_exit"
+      ]
+    },
+    "StdinSource": {
+      "description": "Whether input came from a human at run time or was supplied up front.",
+      "enum": [
+        "interactive",
+        "prefilled"
+      ]
+    },
+    "MetricName": {
+      "description": "Counters surfaced in the metrics view.",
+      "enum": [
+        "comparison",
+        "swap",
+        "assignment",
+        "call",
+        "iteration",
+        "allocation",
+        "read",
+        "write"
+      ]
+    },
+    "Shape": {
+      "description": "Inferred data structure shape. Advisory; always user-overridable. 'unknown' renders as a generic object graph.",
+      "enum": [
+        "array",
+        "matrix",
+        "string",
+        "tuple",
+        "set",
+        "map",
+        "linked_list",
+        "doubly_linked_list",
+        "circular_linked_list",
+        "binary_tree",
+        "bst",
+        "nary_tree",
+        "directed_graph",
+        "undirected_graph",
+        "stack",
+        "queue",
+        "deque",
+        "object",
+        "unknown"
+      ]
+    },
+    "Confidence": {
+      "description": "How much to trust an inference.",
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ]
+    },
+    "NoteLevel": {
+      "description": "Severity of an adapter diagnostic shown to the user.",
+      "enum": [
+        "info",
+        "warn"
+      ]
+    },
+    "Value": {
+      "description": "A value held by a variable or heap slot. Never a nested object: aggregates are referenced by id so that aliasing and cycles are representable, and so mutating a shared object is one event rather than many. Exactly one variant key must be present.",
+      "oneOf": [
+        {
+          "title": "prim",
+          "description": "An immediate value. Integers outside IEEE-754 safe range are strings with bigint set. NaN and infinities are the strings 'nan', 'inf', '-inf'.",
+          "type": "object",
+          "properties": {
+            "prim": {
+              "type": [
+                "null",
+                "boolean",
+                "integer",
+                "number",
+                "string"
+              ],
+              "description": "null, bool, int, float, or string."
+            },
+            "bigint": {
+              "type": "boolean",
+              "description": "Set when prim is a string carrying an integer too large for a double."
+            },
+            "truncated": {
+              "type": "integer",
+              "description": "Full original length, when a long string was shortened."
+            }
+          },
+          "required": [
+            "prim"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "ref",
+          "description": "A reference to a heap object.",
+          "type": "object",
+          "properties": {
+            "ref": {
+              "type": "integer",
+              "description": "Heap object id."
+            }
+          },
+          "required": [
+            "ref"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "addr",
+          "description": "A native pointer (C/C++).",
+          "type": "object",
+          "properties": {
+            "addr": {
+              "type": "string",
+              "description": "Hex address, e.g. '0x7ffd1a2b'."
+            },
+            "type": {
+              "type": "string",
+              "description": "Declared pointee type, e.g. 'int*'."
+            },
+            "dangling": {
+              "type": "boolean",
+              "description": "Target memory has been freed."
+            }
+          },
+          "required": [
+            "addr",
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "unavailable",
+          "description": "The runtime could not report this value. Deliberate: an honest gap beats a fabricated number.",
+          "type": "object",
+          "properties": {
+            "unavailable": {
+              "type": "string",
+              "description": "Human-readable reason, e.g. 'optimized out'."
+            }
+          },
+          "required": [
+            "unavailable"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Arg": {
+      "description": "One argument at a call site.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "SourceFile": {
+      "description": "A source file participating in the run.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "line_count": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "line_count"
+      ],
+      "additionalProperties": false
+    },
+    "EntryPoint": {
+      "description": "Where execution began.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "line"
+      ],
+      "additionalProperties": false
+    },
+    "Limits": {
+      "description": "Resource bounds applied to the run. Present so the UI can explain a truncated trace.",
+      "type": "object",
+      "properties": {
+        "max_steps": {
+          "type": "integer"
+        },
+        "wall_ms": {
+          "type": "integer"
+        },
+        "memory_mb": {
+          "type": "integer"
+        },
+        "output_bytes": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_steps",
+        "wall_ms",
+        "memory_mb",
+        "output_bytes"
+      ],
+      "additionalProperties": false
+    },
+    "Session": {
+      "description": "Trace header. Sent once, before any events.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "language": {
+          "$ref": "#/$defs/Language"
+        },
+        "language_version": {
+          "type": "string"
+        },
+        "adapter_version": {
+          "type": "string"
+        },
+        "profile": {
+          "$ref": "#/$defs/Profile"
+        },
+        "source_files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceFile"
+          }
+        },
+        "entry": {
+          "$ref": "#/$defs/EntryPoint"
+        },
+        "limits": {
+          "$ref": "#/$defs/Limits"
+        },
+        "started_at": {
+          "type": "string",
+          "description": "ISO 8601 UTC."
+        },
+        "guards_active": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Sandbox guards actually in force on this platform. The UI reports these verbatim rather than implying protection that is not present."
+        }
+      },
+      "required": [
+        "id",
+        "language",
+        "language_version",
+        "adapter_version",
+        "profile",
+        "source_files",
+        "entry",
+        "limits",
+        "started_at"
+      ],
+      "additionalProperties": false
+    },
+    "StackEntry": {
+      "description": "One line of a rendered stack trace.",
+      "type": "object",
+      "properties": {
+        "func": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "func",
+        "path",
+        "line"
+      ],
+      "additionalProperties": false
+    },
+    "CollapseEffect": {
+      "description": "Net before/after state for one slot touched inside a folded span. This is what makes a collapse event invertible.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "'var' or 'obj'."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame, for kind 'var'."
+        },
+        "obj": {
+          "type": "integer",
+          "description": "Owning object, for kind 'obj'."
+        },
+        "key": {
+          "type": "string",
+          "description": "Variable name, or heap key rendered as a string."
+        },
+        "before": {
+          "$ref": "#/$defs/Value"
+        },
+        "after": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "kind",
+        "key"
+      ],
+      "additionalProperties": false
+    },
+    "FrameState": {
+      "description": "A frame as captured in a snapshot.",
+      "type": "object",
+      "properties": {
+        "frame": {
+          "type": "integer"
+        },
+        "func": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/$defs/FrameKind"
+        },
+        "caller": {
+          "type": "integer"
+        },
+        "recursion_depth": {
+          "type": "integer"
+        },
+        "bindings": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Value"
+          },
+          "description": "Variable name to current value."
+        },
+        "scopes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Variable name to its VarScope."
+        }
+      },
+      "required": [
+        "frame",
+        "func",
+        "path",
+        "line",
+        "kind",
+        "recursion_depth",
+        "bindings"
+      ],
+      "additionalProperties": false
+    },
+    "ObjectState": {
+      "description": "A heap object as captured in a snapshot.",
+      "type": "object",
+      "properties": {
+        "obj": {
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/$defs/ObjKind"
+        },
+        "type_name": {
+          "type": "string"
+        },
+        "slots": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Value"
+          },
+          "description": "Key (index or field, rendered as a string) to value."
+        },
+        "order": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Explicit slot ordering where it is meaningful, as for lists and arrays."
+        },
+        "length": {
+          "type": "integer"
+        },
+        "addr": {
+          "type": "string"
+        },
+        "shape": {
+          "$ref": "#/$defs/Shape"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "obj",
+        "kind",
+        "type_name",
+        "slots"
+      ],
+      "additionalProperties": false
+    },
+    "LoopState": {
+      "description": "An active loop region as captured in a snapshot.",
+      "type": "object",
+      "properties": {
+        "region": {
+          "type": "integer"
+        },
+        "line_start": {
+          "type": "integer"
+        },
+        "line_end": {
+          "type": "integer"
+        },
+        "iteration": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "region",
+        "line_start",
+        "line_end",
+        "iteration"
+      ],
+      "additionalProperties": false
+    },
+    "StateSnapshot": {
+      "description": "Program state at a point in the trace. Delta-encoded against base_seq unless full is set: a whole-heap snapshot every few hundred steps would outweigh the events it exists to accelerate.",
+      "type": "object",
+      "properties": {
+        "full": {
+          "type": "boolean",
+          "description": "True for a keyframe carrying complete state; false for a delta."
+        },
+        "base_seq": {
+          "type": "integer",
+          "description": "Snapshot this delta applies to. Absent when full."
+        },
+        "frames": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FrameState"
+          }
+        },
+        "frame_order": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "Frame ids, outermost first."
+        },
+        "objects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ObjectState"
+          }
+        },
+        "removed_frames": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "Frames gone since base_seq, for deltas."
+        },
+        "removed_objects": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "Objects gone since base_seq, for deltas."
+        },
+        "loops": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LoopState"
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "Metric name to running total."
+        }
+      },
+      "required": [
+        "full",
+        "frames",
+        "frame_order",
+        "objects"
+      ],
+      "additionalProperties": false
+    },
+    "Event_run_start": {
+      "description": "First event of every trace.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "run_start"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        }
+      },
+      "required": [
+        "seq",
+        "t"
+      ],
+      "additionalProperties": true
+    },
+    "Event_run_end": {
+      "description": "Always emitted, including on limit breach. A truncated trace is a valid trace.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "run_end"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "status": {
+          "$ref": "#/$defs/RunStatus"
+        },
+        "exit_code": {
+          "type": "integer"
+        },
+        "steps": {
+          "type": "integer"
+        },
+        "duration_ms": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "duration_ms",
+        "seq",
+        "status",
+        "steps",
+        "t"
+      ],
+      "additionalProperties": true
+    },
+    "Event_step_line": {
+      "description": "Execution arrived at a line. The atom of playback.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "step_line"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        }
+      },
+      "required": [
+        "seq",
+        "t"
+      ],
+      "additionalProperties": true
+    },
+    "Event_branch": {
+      "description": "A control-flow decision. outcome comes from observed execution; the condition is never re-evaluated, since doing so could fire side effects and change the program being visualized.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "branch"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "kind": {
+          "$ref": "#/$defs/BranchKind"
+        },
+        "expr": {
+          "type": "string",
+          "description": "Source text of the condition, read from the AST."
+        },
+        "outcome": {
+          "$ref": "#/$defs/BranchOutcome"
+        },
+        "target_line": {
+          "type": "integer"
+        },
+        "result": {
+          "type": [
+            "null",
+            "boolean",
+            "integer",
+            "number",
+            "string"
+          ],
+          "description": "Evaluated value, only where the runtime surfaces it for free. Null for settrace-based Python. No view may depend on it."
+        }
+      },
+      "required": [
+        "expr",
+        "kind",
+        "outcome",
+        "seq",
+        "t"
+      ],
+      "additionalProperties": true
+    },
+    "Event_loop_enter": {
+      "description": "Opens a loop region.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "loop_enter"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "region": {
+          "type": "integer"
+        },
+        "line_start": {
+          "type": "integer"
+        },
+        "line_end": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "line_end",
+        "line_start",
+        "region",
+        "seq",
+        "t"
+      ],
+      "additionalProperties": true
+    },
+    "Event_loop_iter": {
+      "description": "One iteration boundary. Basis for collapsing.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "loop_iter"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "region": {
+          "type": "integer"
+        },
+        "i": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "i",
+        "region",
+        "seq",
+        "t"
+      ],
+      "additionalProperties": true
+    },
+    "Event_loop_exit": {
+      "description": "Closes a loop region.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "loop_exit"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "region": {
+          "type": "integer"
+        },
+        "iterations": {
+          "type": "integer"
+        },
+        "reason": {
+          "$ref": "#/$defs/LoopExitReason"
+        }
+      },
+      "required": [
+        "iterations",
+        "reason",
+        "region",
+        "seq",
+        "t"
+      ],
+      "additionalProperties": true
+    },
+    "Event_jump": {
+      "description": "Non-linear control transfer.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "jump"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "kind": {
+          "$ref": "#/$defs/JumpKind"
+        },
+        "target_line": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "seq",
+        "t"
+      ],
+      "additionalProperties": true
+    },
+    "Event_frame_push": {
+      "description": "A call began. Frame ids are unique for the whole run and never reused, so recursion yields a distinct frame per depth.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "frame_push"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "func": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Arg"
+          }
+        },
+        "caller": {
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/$defs/FrameKind"
+        },
+        "recursion_depth": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "args",
+        "func",
+        "kind",
+        "recursion_depth",
+        "seq",
+        "t"
+      ],
+      "additionalProperties": true
+    },
+    "Event_frame_pop": {
+      "description": "A call returned.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "frame_pop"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "return_value": {
+          "$ref": "#/$defs/Value"
+        },
+        "reason": {
+          "$ref": "#/$defs/FramePopReason"
+        }
+      },
+      "required": [
+        "reason",
+        "seq",
+        "t"
+      ],
+      "additionalProperties": true
+    },
+    "Event_var_set": {
+      "description": "A variable was bound or rebound. prev is what it held before, which is what makes the event invertible.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "var_set"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/Value"
+        },
+        "prev": {
+          "$ref": "#/$defs/Value",
+          "description": "Absent when the name did not previously exist."
+        },
+        "scope": {
+          "$ref": "#/$defs/VarScope"
+        },
+        "declared": {
+          "type": "boolean",
+          "description": "True on first binding."
+        }
+      },
+      "required": [
+        "name",
+        "scope",
+        "seq",
+        "t",
+        "value"
+      ],
+      "additionalProperties": true
+    },
+    "Event_var_del": {
+      "description": "A binding disappeared: scope exit, explicit delete, block end.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "var_del"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "name": {
+          "type": "string"
+        },
+        "prev": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "name",
+        "prev",
+        "seq",
+        "t"
+      ],
+      "additionalProperties": true
+    },
+    "Event_obj_new": {
+      "description": "A heap object came into existence.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "obj_new"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "obj": {
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/$defs/ObjKind"
+        },
+        "type_name": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer"
+        },
+        "addr": {
+          "type": "string",
+          "description": "Real address for C/C++; absent for managed languages."
+        },
+        "summary": {
+          "type": "string"
+        },
+        "length": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "obj",
+        "seq",
+        "t",
+        "type_name"
+      ],
+      "additionalProperties": true
+    },
+    "Event_obj_set": {
+      "description": "A slot of a heap object changed.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "obj_set"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "obj": {
+          "type": "integer"
+        },
+        "key": {
+          "type": [
+            "null",
+            "boolean",
+            "integer",
+            "number",
+            "string"
+          ],
+          "description": "Index for sequences; field name or map key otherwise."
+        },
+        "value": {
+          "$ref": "#/$defs/Value"
+        },
+        "prev": {
+          "$ref": "#/$defs/Value"
+        },
+        "op": {
+          "$ref": "#/$defs/ObjSetOp"
+        }
+      },
+      "required": [
+        "key",
+        "obj",
+        "op",
+        "seq",
+        "t",
+        "value"
+      ],
+      "additionalProperties": true
+    },
+    "Event_obj_resize": {
+      "description": "Bulk length change: clear, extend, array reallocation.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "obj_resize"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "obj": {
+          "type": "integer"
+        },
+        "length": {
+          "type": "integer"
+        },
+        "prev_length": {
+          "type": "integer"
+        },
+        "cleared": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Keys removed by the resize, so the event stays invertible."
+        },
+        "cleared_values": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Value"
+          },
+          "description": "Values those keys held, positionally aligned with cleared."
+        }
+      },
+      "required": [
+        "length",
+        "obj",
+        "prev_length",
+        "seq",
+        "t"
+      ],
+      "additionalProperties": true
+    },
+    "Event_obj_free": {
+      "description": "Explicit deallocation. C/C++ only; managed languages do not report collection.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "obj_free"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "obj": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "obj",
+        "seq",
+        "t"
+      ],
+      "additionalProperties": true
+    },
+    "Event_mem_alloc": {
+      "description": "Native allocation.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "mem_alloc"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "addr": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer"
+        },
+        "region": {
+          "$ref": "#/$defs/MemRegion"
+        },
+        "via": {
+          "$ref": "#/$defs/AllocVia"
+        }
+      },
+      "required": [
+        "addr",
+        "region",
+        "seq",
+        "size",
+        "t",
+        "via"
+      ],
+      "additionalProperties": true
+    },
+    "Event_mem_free": {
+      "description": "Native deallocation.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "mem_free"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "addr": {
+          "type": "string"
+        },
+        "via": {
+          "$ref": "#/$defs/FreeVia"
+        }
+      },
+      "required": [
+        "addr",
+        "seq",
+        "t",
+        "via"
+      ],
+      "additionalProperties": true
+    },
+    "Event_ptr_set": {
+      "description": "A pointer was retargeted. dangling is the highest-value teaching signal in C: it is what draws the broken arrow explaining a use-after-free.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "ptr_set"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "name": {
+          "type": "string"
+        },
+        "obj": {
+          "type": "integer"
+        },
+        "to_addr": {
+          "type": "string"
+        },
+        "prev_addr": {
+          "type": "string"
+        },
+        "valid": {
+          "type": "boolean"
+        },
+        "dangling": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "dangling",
+        "seq",
+        "t",
+        "to_addr",
+        "valid"
+      ],
+      "additionalProperties": true
+    },
+    "Event_stdout": {
+      "description": "Standard output, attributed to the step that produced it.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "stdout"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "t",
+        "text"
+      ],
+      "additionalProperties": true
+    },
+    "Event_stderr": {
+      "description": "Standard error, attributed to the step that produced it.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "stderr"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "t",
+        "text"
+      ],
+      "additionalProperties": true
+    },
+    "Event_stdin_request": {
+      "description": "Execution is blocked awaiting input.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "stdin_request"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "prompt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "t"
+      ],
+      "additionalProperties": true
+    },
+    "Event_stdin_response": {
+      "description": "Input that was supplied. Recorded so replay is deterministic without a human.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "stdin_response"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "text": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/StdinSource"
+        }
+      },
+      "required": [
+        "seq",
+        "source",
+        "t",
+        "text"
+      ],
+      "additionalProperties": true
+    },
+    "Event_exception_raise": {
+      "description": "An exception was raised.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "exception_raise"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "type": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "obj": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "message",
+        "seq",
+        "t",
+        "type"
+      ],
+      "additionalProperties": true
+    },
+    "Event_exception_catch": {
+      "description": "An exception was handled.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "exception_catch"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "handler_line": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "handler_line",
+        "seq",
+        "t"
+      ],
+      "additionalProperties": true
+    },
+    "Event_exception_uncaught": {
+      "description": "An exception terminated the program. Terminal, but the trace stays replayable.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "exception_uncaught"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "type": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "stack": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StackEntry"
+          }
+        }
+      },
+      "required": [
+        "message",
+        "seq",
+        "stack",
+        "t",
+        "type"
+      ],
+      "additionalProperties": true
+    },
+    "Event_metric": {
+      "description": "Counter increment for the metrics view.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "metric"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "name": {
+          "$ref": "#/$defs/MetricName"
+        },
+        "delta": {
+          "type": "integer"
+        },
+        "region": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "delta",
+        "name",
+        "seq",
+        "t"
+      ],
+      "additionalProperties": true
+    },
+    "Event_structure_hint": {
+      "description": "Inferred shape of an object. Advisory, overridable, and carries its evidence so a wrong guess is explainable rather than mysterious.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "structure_hint"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "obj": {
+          "type": "integer"
+        },
+        "shape": {
+          "$ref": "#/$defs/Shape"
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Human-readable reasons, shown in the UI."
+        },
+        "root": {
+          "type": "boolean",
+          "description": "True when this object is the entry point of the structure."
+        }
+      },
+      "required": [
+        "confidence",
+        "evidence",
+        "obj",
+        "seq",
+        "shape",
+        "t"
+      ],
+      "additionalProperties": true
+    },
+    "Event_snapshot": {
+      "description": "Periodic state capture bounding how far a seek must replay.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "snapshot"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "state": {
+          "$ref": "#/$defs/StateSnapshot"
+        }
+      },
+      "required": [
+        "seq",
+        "state",
+        "t"
+      ],
+      "additionalProperties": true
+    },
+    "Event_collapse": {
+      "description": "A folded span of repeated loop iterations, represented as one composite invertible step. Carries net before/after state so folding cannot break the invertibility guarantee.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "collapse"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "region": {
+          "type": "integer"
+        },
+        "from_seq": {
+          "type": "integer"
+        },
+        "to_seq": {
+          "type": "integer"
+        },
+        "iterations": {
+          "type": "integer"
+        },
+        "effects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CollapseEffect"
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": [
+        "effects",
+        "from_seq",
+        "iterations",
+        "region",
+        "seq",
+        "t",
+        "to_seq"
+      ],
+      "additionalProperties": true
+    },
+    "Event_note": {
+      "description": "Adapter diagnostic surfaced to the user, such as a step budget being reached or a frame whose locals could not be read.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "description": "Monotonic from 0. Identity of a point in time."
+        },
+        "t": {
+          "const": "note"
+        },
+        "step": {
+          "type": "integer",
+          "description": "Step ordinal. Present on events the user can land on; absent on bookkeeping events."
+        },
+        "frame": {
+          "type": "integer",
+          "description": "Owning frame id."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based source line."
+        },
+        "path": {
+          "type": "string",
+          "description": "Source file. Omitted when it is the entry file."
+        },
+        "ms": {
+          "type": "number",
+          "description": "Milliseconds since run start, for the timeline view."
+        },
+        "level": {
+          "$ref": "#/$defs/NoteLevel"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "level",
+        "seq",
+        "t",
+        "text"
+      ],
+      "additionalProperties": true
+    },
+    "Event": {
+      "description": "Any trace event.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Event_run_start"
+        },
+        {
+          "$ref": "#/$defs/Event_run_end"
+        },
+        {
+          "$ref": "#/$defs/Event_step_line"
+        },
+        {
+          "$ref": "#/$defs/Event_branch"
+        },
+        {
+          "$ref": "#/$defs/Event_loop_enter"
+        },
+        {
+          "$ref": "#/$defs/Event_loop_iter"
+        },
+        {
+          "$ref": "#/$defs/Event_loop_exit"
+        },
+        {
+          "$ref": "#/$defs/Event_jump"
+        },
+        {
+          "$ref": "#/$defs/Event_frame_push"
+        },
+        {
+          "$ref": "#/$defs/Event_frame_pop"
+        },
+        {
+          "$ref": "#/$defs/Event_var_set"
+        },
+        {
+          "$ref": "#/$defs/Event_var_del"
+        },
+        {
+          "$ref": "#/$defs/Event_obj_new"
+        },
+        {
+          "$ref": "#/$defs/Event_obj_set"
+        },
+        {
+          "$ref": "#/$defs/Event_obj_resize"
+        },
+        {
+          "$ref": "#/$defs/Event_obj_free"
+        },
+        {
+          "$ref": "#/$defs/Event_mem_alloc"
+        },
+        {
+          "$ref": "#/$defs/Event_mem_free"
+        },
+        {
+          "$ref": "#/$defs/Event_ptr_set"
+        },
+        {
+          "$ref": "#/$defs/Event_stdout"
+        },
+        {
+          "$ref": "#/$defs/Event_stderr"
+        },
+        {
+          "$ref": "#/$defs/Event_stdin_request"
+        },
+        {
+          "$ref": "#/$defs/Event_stdin_response"
+        },
+        {
+          "$ref": "#/$defs/Event_exception_raise"
+        },
+        {
+          "$ref": "#/$defs/Event_exception_catch"
+        },
+        {
+          "$ref": "#/$defs/Event_exception_uncaught"
+        },
+        {
+          "$ref": "#/$defs/Event_metric"
+        },
+        {
+          "$ref": "#/$defs/Event_structure_hint"
+        },
+        {
+          "$ref": "#/$defs/Event_snapshot"
+        },
+        {
+          "$ref": "#/$defs/Event_collapse"
+        },
+        {
+          "$ref": "#/$defs/Event_note"
+        }
+      ]
+    }
+  }
+}
