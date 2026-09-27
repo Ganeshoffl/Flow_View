@@ -53,6 +53,13 @@ __all__ = ["Tracer", "TracerOptions", "run_path", "run_source"]
 
 ADAPTER_VERSION = "0.1.0"
 
+#: How far out to look for a finalizer above the current frame.
+#:
+#: The search stops at the first frame the tracer already follows, so in practice it walks one or two
+#: frames. The cap only matters for a stack that is somehow entirely unfamiliar, where giving up and
+#: tracing is the safer answer than walking a deep stack on every call.
+_FINALIZER_SEARCH_LIMIT = 32
+
 #: The tracer's own modules. Frames from these are never traced, so flow_view cannot appear in its
 #: own output.
 _INTERNAL_MODULES = (
@@ -548,24 +555,74 @@ class Tracer:
         the caller that started the run, the test harness, the innards of every imported module.
         Roughly two thousand events instead of nineteen.
 
-        A frame is in scope when it *is* the program's module frame, or when its caller already is.
+        A frame is in scope when it *is* the program's module frame, or when something above it in the
+        stack is a frame the tracer already follows.
+
+        The walk matters because not every frame in between gets announced: the internals of a library
+        call are skipped, so a callback the library reaches back into — the function passed to
+        ``sorted(key=...)`` — has an unannounced library frame as its immediate caller. Checking only
+        the immediate caller dropped those, and a callback is the user's own code.
         """
         if frame.f_code is self._root_code:
             return True
-        caller = frame.f_back
-        return caller is not None and id(caller) in self._frames
+        hops = 0
+        current = frame.f_back
+        while current is not None and hops < _FINALIZER_SEARCH_LIMIT:
+            if id(current) in self._frames:
+                return True
+            current = current.f_back
+            hops += 1
+        return False
 
     def ignores(self, frame: FrameType) -> bool:
         """Whether this frame must not be traced at all.
 
-        Covers the tracer's own modules and anything reached while muted. Both backends consult it,
-        so neither can let flow_view appear in its own output.
+        Covers the tracer's own modules, anything reached while muted, and finalizers. Both backends
+        consult it, so neither can let flow_view — or the garbage collector — appear in its own output.
         """
         return (
             self._muted
             or self.emitter.stopped
             or frame.f_code.co_filename in self._internal_files
+            or self._is_foreign_finalizer(frame)
         )
+
+    def _is_foreign_finalizer(self, frame: FrameType) -> bool:
+        """Whether this is somebody else's ``__del__``, run by the interpreter of its own accord.
+
+        ``__del__`` is the one method nobody calls. It fires whenever the last reference happens to go
+        away — a fact about the interpreter's bookkeeping rather than about the program — and it can
+        land in the middle of any statement.
+
+        Leaving library finalizers in produced a trace claiming the program had called ``__del__``
+        twenty five times and ``is_closed`` five times, on objects it had never touched. It also showed
+        up as the two backends disagreeing: ``sys.monitoring`` is global and reported the finalizers,
+        while ``settrace`` spends long enough inside its own callbacks that collection usually happened
+        *there*, where tracing is suppressed, and so mostly did not. The disagreement was intermittent
+        and was blamed on the backends. The backends were not the problem.
+
+        A ``__del__`` the user wrote is a different matter: it is their code, they will want to see it
+        run, and the surprise of *when* it runs is worth showing rather than hiding. So only foreign
+        ones are refused.
+
+        Refusing the finalizer itself is not enough, because whatever it calls has to go too, and the
+        two backends do not agree on how a frame becomes known. Walking outward until the first frame
+        the tracer already follows settles it in one test: meeting a foreign ``__del__`` on the way out
+        means this frame is running underneath one, and reaching known territory first means it is not.
+        The walk is short, because a tracked frame is never far away.
+        """
+        hops = 0
+        current: FrameType | None = frame
+        while current is not None and hops < _FINALIZER_SEARCH_LIMIT:
+            code = current.f_code
+            if code.co_name == "__del__" and not self._is_user_file(code.co_filename):
+                return True
+            if id(current) in self._frames:
+                # Reached a frame the tracer is already following, so nothing above it was a finalizer.
+                return False
+            current = current.f_back
+            hops += 1
+        return False
 
     # -- settrace adapter --------------------------------------------------
 
@@ -588,18 +645,32 @@ class Tracer:
 
     def handle_call(self, frame: FrameType) -> bool:
         """A frame was entered. Returns whether its interior should be traced."""
-        user = self._is_user_file(frame.f_code.co_filename)
         name = frame.f_code.co_name
 
-        if not user:
-            # An opaque library call: announced with its arguments, its interior suppressed. No
-            # per-line cost is paid inside it, which is the point.
-            self._push(frame, name, kind="library")
-            frame.f_trace_lines = False
+        if self._is_user_file(frame.f_code.co_filename):
+            # The user's own code, including a callback a library reached back into.
+            self._push(frame, name, kind="user")
+            return True
+
+        if self._frame_stack and self._frame_stack[-1].kind == "library":
+            # Already inside an opaque call, so this is one library calling another and none of it is
+            # the program's business.
+            #
+            # Every nested internal frame used to be announced. `json.dumps(d)` arrived as three steps
+            # — dumps, encode, iterencode — and `import fresh_mod` on a two-line program arrived as
+            # *227*, almost all of it importlib._bootstrap. Opaque is supposed to mean the user sees
+            # the call they made and not the machinery underneath it.
+            #
+            # It was also where the backends disagreed: settrace and sys.monitoring admit frames by
+            # different routes, so they counted the machinery differently. With the machinery gone
+            # there is nothing left to disagree about.
             return False
 
-        self._push(frame, name, kind="user")
-        return True
+        # The outermost library frame: the call the user actually wrote. Announced with its arguments,
+        # its interior suppressed, so no per-line cost is paid inside it.
+        self._push(frame, name, kind="library")
+        frame.f_trace_lines = False
+        return False
 
     def _push(self, frame: FrameType, name: str, *, kind: str) -> int:
         frame_id = self._next_frame_id
@@ -617,8 +688,20 @@ class Tracer:
         code = frame.f_code
         count = code.co_argcount + getattr(code, "co_kwonlyargcount", 0)
         for arg_name in code.co_varnames[:count]:
-            if arg_name in frame.f_locals:
-                args.append({"name": arg_name, "value": self._encode(frame.f_locals[arg_name])})
+            if arg_name not in frame.f_locals:
+                continue
+            value = frame.f_locals[arg_name]
+            # An opaque call does not get to put new things in the heap.
+            #
+            # A library frame's arguments are announced so the reader can see what was passed, and the
+            # interesting ones are the user's own data — which, coming from somewhere the reader can
+            # already see, is a primitive or an object the heap already holds. An object nobody has
+            # heard of, arriving as an argument to a library function, is the library's own business:
+            # this is how a JSONEncoder and a codec's IncrementalDecoder ended up drawn as nodes in the
+            # heap view of a program whose only sin was calling `json.dumps` and `input`.
+            if kind == "library" and not is_atomic(value) and not self._registry.known(value):
+                continue
+            args.append({"name": arg_name, "value": self._encode(value)})
 
         caller = self._frame_stack[-2].frame_id if len(self._frame_stack) > 1 else None
         payload: dict[str, Any] = {
@@ -699,7 +782,17 @@ class Tracer:
         # Changes are normally noticed at the *following* line event, which the last line of a frame
         # never gets. Without this, `items.append(x)` as a program's final statement would leave no
         # trace of the append at all.
-        if not self._unwinding:
+        #
+        # Not for library frames. Their interior is not stepped, but this ran on the way out of them
+        # regardless, and harvested it wholesale: `json.dumps({"a": 1})` reported `markers`,
+        # `_encoder`, `floatstr` and `_iterencode` as variables and put a JSONEncoder in the heap with
+        # `skipkeys`, `ensure_ascii` and `check_circular` on it. Reading one line of input exposed the
+        # innards of a codec. None of it is the user's program, which is the entire point of calling a
+        # library call opaque.
+        #
+        # It was also indexing the wrong file: `self.analysis` describes the user's source, and
+        # `pending_line` here is a line number in someone else's.
+        if not self._unwinding and state.kind != "library":
             state.previous_line = state.pending_line
             fresh = self._diff_locals(frame, state)
             last = self.analysis.at(state.pending_line)
@@ -740,7 +833,13 @@ class Tracer:
             "line": frame.f_lineno,
         }
         if not self._unwinding:
-            payload["return_value"] = self._encode(value)
+            # Same rule as the arguments above: an opaque call does not get to put new things in the
+            # heap. `json.dumps` returns a string and is unaffected; its internal `iterencode` returned
+            # a tuple of half-built chunks, which was being drawn as a heap node. Where the returned
+            # object really is the user's — `sorted(...)` handing back a new list — it is announced a
+            # moment later by the assignment that binds it, which is where a reader looks for it.
+            if state.kind != "library" or is_atomic(value) or self._registry.known(value):
+                payload["return_value"] = self._encode(value)
         self.emitter.emit("frame_pop", payload)
 
     def handle_raise(self, frame: FrameType, exc_type: type, exc_value: BaseException) -> None:
