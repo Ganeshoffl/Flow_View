@@ -195,6 +195,11 @@ class TestRunning:
 
     def test_events_arrive_batched_rather_than_one_per_frame(self, client: Any) -> None:
         # One socket frame per event would spend more time framing than working.
+        #
+        # The program deliberately has no loop long enough to be folded. It used to be
+        # `for i in range(120)`, which stopped producing enough events to say anything about batching
+        # once loop collapsing arrived - the test was failing because a different feature had started
+        # working, which is not a useful thing for a test to tell you.
         session = client.post("/api/session").json()
         batches = 0
         total = 0
@@ -203,7 +208,17 @@ class TestRunning:
                 {
                     "type": "run",
                     "language": "python",
-                    "source": "t = 0\nfor i in range(120):\n    t += i\n",
+                    "source": (
+                        "def work(n):\n"
+                        "    total = 0\n"
+                        "    for i in range(15):\n"
+                        "        total += i * n\n"
+                        "    return total\n"
+                        "\n"
+                        "out = []\n"
+                        "for k in range(19):\n"
+                        "    out.append(work(k))\n"
+                    ),
                 }
             )
             while True:
@@ -215,6 +230,39 @@ class TestRunning:
                     break
         assert total > 300
         assert batches < total, "events must be grouped, not sent individually"
+
+    def test_a_long_loop_arrives_folded_and_still_reports_the_right_answer(
+        self, client: Any
+    ) -> None:
+        """Loop collapsing, through the whole server path rather than in-process.
+
+        Twenty thousand iterations is already more than a browser should be asked to hold one event at
+        a time. What matters is that shortening the trace did not cost the answer: the sum is exact,
+        and every iteration is still accounted for between the folds and the ones kept verbatim.
+        """
+        result = run_program(
+            client,
+            "total = 0\nfor i in range(20000):\n    total += i\nprint(total)\n",
+        )
+        printed = "".join(e["text"] for e in result["events"] if e["t"] == "stdout")
+        assert printed.strip() == str(sum(range(20000)))
+
+        folds = [e for e in result["events"] if e["t"] == "collapse"]
+        assert folds, "a 20000-iteration loop arrived unfolded"
+
+        folded = sum(f["iterations"] for f in folds)
+        verbatim = len([e for e in result["events"] if e["t"] == "loop_iter"])
+        assert folded + verbatim == 20000, (
+            f"{folded} folded plus {verbatim} kept is not 20000 - iterations went missing"
+        )
+        assert len(result["events"]) < 2000, (
+            f"{len(result['events'])} events for 20000 iterations is not folded enough to help"
+        )
+        # The work is reported even though the steps are not.
+        iterations = sum(
+            int((f.get("metrics") or {}).get("iteration", 0)) for f in folds
+        ) + sum(e["delta"] for e in result["events"] if e["t"] == "metric" and e["name"] == "iteration")
+        assert iterations == 20000, f"the trace claims {iterations} iterations, not 20000"
 
 
 class TestGuards:
