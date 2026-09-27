@@ -159,7 +159,22 @@ class Emitter:
         "_stopped",
         "_stop_reason",
         "_notes_sent",
+        "_last_flush",
     )
+
+    #: How long a finished event may sit in the buffer before it is pushed out, in milliseconds.
+    #:
+    #: Matched to the server's batching window: flushing more often buys nothing the viewer can see,
+    #: and flushing less often is what "live" stops meaning.
+    FLUSH_INTERVAL_MS = 16.0
+
+    #: Events after which the buffer is emptied immediately, whatever the interval says.
+    #:
+    #: `stdin_request` is the one that matters. Python block-buffers a pipe, so a program that stopped
+    #: to ask a question left its question in an 8 KB buffer that nothing would empty until the
+    #: program ended — and it could not end, because it was waiting for the answer to the question
+    #: nobody had been shown. The UI sat on "running" while the run was deadlocked.
+    URGENT = frozenset({"stdin_request", "run_end", "note", "error"})
 
     def __init__(
         self,
@@ -197,6 +212,7 @@ class Emitter:
         self._stopped = False
         self._stop_reason: str | None = None
         self._notes_sent: set[str] = set()
+        self._last_flush = self._started
 
     # -- timing ------------------------------------------------------------
 
@@ -226,6 +242,17 @@ class Emitter:
             event["step"] = self.step
             self.step += 1
         self._write(event)
+
+        # Get it out of the buffer. See URGENT and FLUSH_INTERVAL_MS above: without this the trace
+        # only reached the viewer 8 KB at a time, so nothing was live and a blocking read deadlocked.
+        if kind in self.URGENT:
+            self._flush()
+            self._last_flush = self._clock()
+        else:
+            now = self._clock()
+            if (now - self._last_flush) * 1000.0 >= self.FLUSH_INTERVAL_MS:
+                self._flush()
+                self._last_flush = now
 
     def note(self, level: str, text: str, *, once: bool = True) -> None:
         """Surface a diagnostic to the user.

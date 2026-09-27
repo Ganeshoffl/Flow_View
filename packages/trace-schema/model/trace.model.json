@@ -69,7 +69,7 @@
       "values": ["free", "delete", "delete_array", "scope_exit"]
     },
     "StdinSource": {
-      "doc": "Whether input came from a human at run time or was supplied up front.",
+      "doc": "Whether input came from a human at run time or was supplied up front. Measured from how long the read blocked, not assumed.",
       "values": ["interactive", "prefilled"]
     },
     "MetricName": {
@@ -477,10 +477,11 @@
     },
     "stdin_response": {
       "group": "io",
-      "doc": "Input that was supplied. Recorded so replay is deterministic without a human.",
+      "doc": "Input that was supplied. Recorded so replay is deterministic without a human. waited_ms is how long the program actually sat on the read, and is what source is derived from.",
       "fields": {
         "text": "string",
-        "source": { "t": "enum:StdinSource" }
+        "source": { "t": "enum:StdinSource" },
+        "waited_ms": { "t": "float", "opt": true }
       }
     },
 

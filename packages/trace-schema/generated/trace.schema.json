@@ -180,7 +180,7 @@
       ]
     },
     "StdinSource": {
-      "description": "Whether input came from a human at run time or was supplied up front.",
+      "description": "Whether input came from a human at run time or was supplied up front. Measured from how long the read blocked, not assumed.",
       "enum": [
         "interactive",
         "prefilled"
@@ -1818,7 +1818,7 @@
       "additionalProperties": true
     },
     "Event_stdin_response": {
-      "description": "Input that was supplied. Recorded so replay is deterministic without a human.",
+      "description": "Input that was supplied. Recorded so replay is deterministic without a human. waited_ms is how long the program actually sat on the read, and is what source is derived from.",
       "type": "object",
       "properties": {
         "seq": {
@@ -1853,6 +1853,9 @@
         },
         "source": {
           "$ref": "#/$defs/StdinSource"
+        },
+        "waited_ms": {
+          "type": "number"
         }
       },
       "required": [

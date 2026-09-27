@@ -583,3 +583,132 @@ class TestPerformance:
             f"{small:.0f}µs/step at 100 objects vs {large:.0f}µs/step at 2000 — "
             "per-step cost must not scale with the heap"
         )
+
+
+
+class TestGettingEventsOutOfTheBuffer:
+    """Whether a written event has actually left the process.
+
+    Python block-buffers a pipe, and the tracer's only channel is its stdout. Without deliberate
+    flushing a run streamed nothing until 8 KB had piled up — so "live" was a lie for any small
+    program, and a program that stopped to ask a question deadlocked outright: the question sat in the
+    buffer, and the buffer could only be emptied by the program ending, which needed the answer to the
+    question nobody had been shown.
+    """
+
+    def emitter(self, clock: Any) -> tuple[Any, list[str]]:
+        import io
+
+        from flow_view_tracer.emit import Emitter
+
+        log: list[str] = []
+
+        class RecordingStream(io.StringIO):
+            def flush(self) -> None:  # type: ignore[override]
+                log.append("flush")
+
+        return Emitter(RecordingStream(), clock=clock), log
+
+    def test_a_blocking_read_is_pushed_out_immediately(self) -> None:
+        now = [0.0]
+        emitter, log = self.emitter(lambda: now[0])
+
+        emitter.emit("stdin_request", {"prompt": "name? "})
+
+        assert log == ["flush"], "the question must leave the process before the program waits on it"
+
+    def test_the_end_of_a_run_is_pushed_out_immediately(self) -> None:
+        now = [0.0]
+        emitter, log = self.emitter(lambda: now[0])
+        emitter.emit("run_end", {"status": "ok", "steps": 1, "duration_ms": 1.0})
+        assert log == ["flush"]
+
+    def test_an_ordinary_event_does_not_flush_on_every_step(self) -> None:
+        # Flushing per event would put a syscall in the hot path of the tracer for no visible gain.
+        now = [0.0]
+        emitter, log = self.emitter(lambda: now[0])
+        for _ in range(50):
+            emitter.emit("step_line", {"frame": 0, "line": 1, "path": "main.py"})
+        assert log == [], "no time passed, so there was nothing worth flushing for"
+
+    def test_ordinary_events_are_pushed_out_once_the_window_passes(self) -> None:
+        now = [0.0]
+        emitter, log = self.emitter(lambda: now[0])
+
+        emitter.emit("step_line", {"frame": 0, "line": 1, "path": "main.py"})
+        assert log == []
+
+        # Past the batching window: whatever is buffered should go now, even mid-run.
+        now[0] = Emitter_interval_seconds() * 2
+        emitter.emit("step_line", {"frame": 0, "line": 2, "path": "main.py"})
+        assert log == ["flush"], "a long run must stream, not arrive 8 KB at a time"
+
+    def test_a_long_quiet_run_keeps_streaming(self) -> None:
+        now = [0.0]
+        emitter, log = self.emitter(lambda: now[0])
+        for i in range(5):
+            now[0] += Emitter_interval_seconds() * 1.5
+            emitter.emit("step_line", {"frame": 0, "line": i + 1, "path": "main.py"})
+        assert len(log) == 5
+
+
+def Emitter_interval_seconds() -> float:
+    from flow_view_tracer.emit import Emitter
+
+    return Emitter.FLUSH_INTERVAL_MS / 1000.0
+
+
+class TestWhereAnAnswerCameFrom:
+    """The `source` on a recorded answer, which used to be hardcoded to "prefilled".
+
+    That quietly asserted no human was ever involved in any run. The adapter cannot know for certain —
+    prefilled input and a typed answer are the same bytes on the same pipe — so it times the read,
+    which separates the two by about three orders of magnitude. Under the server the label is replaced
+    by an exact one; this is the standalone behaviour, which is what a redirected or terminal stdin
+    gets.
+    """
+
+    def test_input_already_waiting_is_reported_as_prefilled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import io
+
+        monkeypatch.setattr(sys, "stdin", io.StringIO("Ada\n"))
+        traced = Traced('name = input("who? ")\nprint(name)\n')
+
+        answered = [e for e in traced.events if e["t"] == "stdin_response"]
+        assert [e["text"] for e in answered] == ["Ada"]
+        assert answered[0]["source"] == "prefilled"
+        assert answered[0]["waited_ms"] < 250, "reading a ready buffer is not waiting for a person"
+
+    def test_the_wait_is_recorded_so_the_label_can_be_checked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import io
+
+        monkeypatch.setattr(sys, "stdin", io.StringIO("1\n"))
+        traced = Traced("x = input()\n")
+
+        answered = [e for e in traced.events if e["t"] == "stdin_response"]
+        assert "waited_ms" in answered[0], (
+            "the measurement behind the label has to be visible, or the label has to be trusted"
+        )
+
+    def test_an_answer_that_took_human_time_is_reported_as_interactive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A read that does not return until time has passed is what a person looks like from in here.
+        import io
+        import time
+
+        class SlowStdin(io.StringIO):
+            def readline(self, *args: Any) -> str:  # type: ignore[override]
+                time.sleep(0.3)
+                return super().readline(*args)
+
+        monkeypatch.setattr(sys, "stdin", SlowStdin("32\n"))
+        traced = Traced("age = input()\n")
+
+        answered = [e for e in traced.events if e["t"] == "stdin_response"]
+        assert answered[0]["source"] == "interactive"
+        assert answered[0]["waited_ms"] >= 250

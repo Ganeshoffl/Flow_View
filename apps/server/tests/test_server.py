@@ -239,3 +239,138 @@ class TestGuards:
         result = run_program(client, "open('out.txt', 'w').write('x')\nprint('wrote')\n")
         printed = "".join(e["text"] for e in result["events"] if e["t"] == "stdout")
         assert "wrote" in printed
+
+
+
+def within(seconds: float, work: Any) -> Any:
+    """Run `work`, failing if it has not finished in time.
+
+    There is no per-receive timeout on a test socket, so a server that never sends the message a test
+    is waiting for hangs the whole suite instead of failing it. The bugs below were exactly that
+    shape, so they are checked against a deadline.
+    """
+    import threading
+
+    outcome: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            outcome["value"] = work()
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the calling thread
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    if thread.is_alive():
+        raise AssertionError(
+            f"nothing arrived within {seconds}s - the run is deadlocked, not merely slow"
+        )
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
+
+
+class TestAProgramThatStopsToAskAQuestion:
+    """Interactive input, which needs events to reach the browser *before* the program can continue.
+
+    Three separate buffers used to swallow the question, and all three had to be fixed for any of
+    this to work:
+
+      - the tracer block-buffered its stdout, so the `stdin_request` sat in an 8 KB buffer;
+      - this server batched events and only ever decided to flush when the *next* event arrived,
+        which for a blocked program is never;
+      - and prefilled input was written without the newline that `input()` needs to return.
+
+    Each one on its own is enough to hang the run with the UI showing "running", so each one gets a
+    test that fails rather than hangs.
+    """
+
+    def test_the_question_reaches_the_browser_before_the_answer_is_given(self, client: Any) -> None:
+        session = client.post("/api/session").json()
+
+        def conversation() -> dict[str, Any]:
+            with client.websocket_connect(f"/api/session/{session['id']}/ws") as socket:
+                socket.send_json(
+                    {
+                        "type": "run",
+                        "language": "python",
+                        "source": 'age = input("how old? ")\nprint("in ten years:", int(age) + 10)\n',
+                    }
+                )
+                # Nothing has been sent as stdin. The request must still arrive, or there is no way
+                # for anyone to know an answer is wanted.
+                asked = None
+                for _ in range(200):
+                    message = socket.receive_json()
+                    if message.get("type") != "events":
+                        continue
+                    for event in message["events"]:
+                        if event["t"] == "stdin_request":
+                            asked = event
+                            break
+                    if asked:
+                        break
+                assert asked is not None, "the program's question never arrived"
+                socket.send_json({"type": "stdin", "text": "32"})
+                return {"asked": asked, **collect(socket)}
+
+        result = within(30, conversation)
+        assert result["asked"]["prompt"] == "how old? "
+        printed = "".join(e["text"] for e in result["events"] if e["t"] == "stdout")
+        assert "in ten years: 42" in printed
+        answered = [e for e in result["events"] if e["t"] == "stdin_response"]
+        assert [e["text"] for e in answered] == ["32"]
+        assert answered[0]["source"] == "interactive"
+
+    def test_a_partial_batch_is_sent_while_the_program_is_quiet(self, client: Any) -> None:
+        # The deadlock in miniature: too few events to fill a batch, then silence. Whatever has been
+        # collected has to go out on the timer, not on the arrival of an event that will never come.
+        session = client.post("/api/session").json()
+
+        def wait_for_something() -> int:
+            with client.websocket_connect(f"/api/session/{session['id']}/ws") as socket:
+                socket.send_json(
+                    {
+                        "type": "run",
+                        "language": "python",
+                        "source": 'x = 1\ny = input("more? ")\n',
+                    }
+                )
+                seen = 0
+                for _ in range(200):
+                    message = socket.receive_json()
+                    if message.get("type") == "events":
+                        seen += len(message["events"])
+                        if seen:
+                            return seen
+                return seen
+
+        assert within(30, wait_for_something) > 0
+
+    def test_prefilled_input_without_a_trailing_newline_still_completes(self, client: Any) -> None:
+        # The input box is a textarea. A user who types one value and presses Run leaves no newline,
+        # and `input()` reads a *line*, so the run used to hang forever on a read that could not
+        # return.
+        result = within(
+            30,
+            lambda: run_program(
+                client,
+                'name = input()\nprint("hello", name)\n',
+                stdin="Ada",
+            ),
+        )
+        printed = "".join(e["text"] for e in result["events"] if e["t"] == "stdout")
+        assert "hello Ada" in printed
+
+    def test_several_prefilled_values_without_a_final_newline_all_arrive(self, client: Any) -> None:
+        result = within(
+            30,
+            lambda: run_program(
+                client,
+                "a = input()\nb = input()\nprint(int(a) + int(b))\n",
+                stdin="20\n22",
+            ),
+        )
+        printed = "".join(e["text"] for e in result["events"] if e["t"] == "stdout")
+        assert "42" in printed

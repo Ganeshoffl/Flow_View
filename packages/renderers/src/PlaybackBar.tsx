@@ -68,7 +68,12 @@ export function PlaybackBar({ store, defaultSpeed = 4 }: PlaybackBarProps) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+      // The focused control gets first refusal on the key.
+      //
+      // This used to bail out for every focused INPUT, which swept in checkboxes: tick "follow live",
+      // press the left arrow, and nothing happened, because the checkbox still had focus and threw
+      // every transport key away until you clicked somewhere else.
+      if (ownsKey(target, event.key)) return;
       switch (event.key) {
         case "ArrowRight":
         case "n":
@@ -203,3 +208,40 @@ export function PlaybackBar({ store, defaultSpeed = 4 }: PlaybackBarProps) {
     </div>
   );
 }
+
+
+
+
+/**
+ * Does the focused element already mean something by this key?
+ *
+ * Three groups, and the distinction matters because guessing wrong is invisible in one direction and
+ * infuriating in the other:
+ *
+ *  - Text entry keeps everything. "n" must type an n, not step to the next line.
+ *  - Sliders and dropdowns keep the arrows, which move them. The scrub bar in this very component is
+ *    a range input, and if both it and the transport handled the left arrow one press would go back
+ *    two steps.
+ *  - Buttons and checkboxes keep the space bar, which is how they are activated without a mouse.
+ *    They have no use for the arrows, so the transport takes those.
+ */
+function ownsKey(target: HTMLElement | null, key: string): boolean {
+  if (!target) return false;
+  if (target.isContentEditable) return true;
+
+  const tag = target.tagName;
+  if (tag === "TEXTAREA") return true;
+  if (tag === "SELECT") return true;
+  if (tag === "BUTTON" || tag === "A") return key === " " || key === "Enter";
+  if (tag !== "INPUT") return false;
+
+  const type = (target as HTMLInputElement).type.toLowerCase();
+  if (SPACE_ACTIVATED.has(type)) return key === " " || key === "Enter";
+  if (type === "range") return true;
+  // Anything else — including a type the browser did not recognise — is a text field, because that
+  // is what HTML falls back to.
+  return true;
+}
+
+/** Input types activated by the space bar rather than filled in. */
+const SPACE_ACTIVATED = new Set(["checkbox", "radio", "button", "submit", "reset", "file"]);

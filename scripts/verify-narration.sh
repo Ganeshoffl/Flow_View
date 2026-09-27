@@ -12,7 +12,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=scripts/_env.sh
 source "$ROOT/scripts/_env.sh"
-SESSION="${1:-fv-narr}"
+AB_SESSION="${1:-fv-narr}"
 cd "$ROOT"
 
 cleanup() {
@@ -38,29 +38,34 @@ done
 echo " server=${api:-down} ui=${web:-down}"
 [ "${api:-}" = "200" ] && [ "${web:-}" = "200" ] || { tail -20 /tmp/fv-narr-server.log; exit 1; }
 
-ab() { agent-browser --session "$SESSION" "$@"; }
-peek() { ab eval "$1" 2>&1 | tail -2 | head -1 | sed 's/^"//; s/"$//; s/\\"/"/g'; }
+FAILURES=0
+fail() { printf '  FAIL  %s\n' "$1"; FAILURES=$((FAILURES + 1)); }
 
 ab open "http://127.0.0.1:5173/" >/dev/null 2>&1
+sleep 2
+ab_instrument >/dev/null
 ab snapshot >/dev/null 2>&1
 
-PROGRAM="'values = [5, 1, 4, 2, 8, 3]\\nn = len(values)\\nfor i in range(n - 1):\\n    for j in range(n - 1 - i):\\n        if values[j] > values[j + 1]:\\n            values[j], values[j + 1] = values[j + 1], values[j]\\nprint(values)\\n'"
+PROGRAM='values = [5, 1, 4, 2, 8, 3]
+n = len(values)
+for i in range(n - 1):
+    for j in range(n - 1 - i):
+        if values[j] > values[j + 1]:
+            values[j], values[j + 1] = values[j + 1], values[j]
+print(values)
+'
 
-ab eval "(() => {
-  const toggle = [...document.querySelectorAll('button')].find(b => b.textContent === 'Edit code');
-  if (toggle) toggle.click();
-  const area = document.querySelector('.fv-editor-area');
-  if (!area) return 'no editor';
-  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
-  setter.call(area, $PROGRAM);
-  area.dispatchEvent(new Event('input', { bubbles: true }));
-  return 'set';
-})()" >/dev/null 2>&1
+ab fill '.fv-editor-area' "$PROGRAM" >/dev/null 2>&1
+ab_click 'button.fv-run' || { echo "the run button was not clicked" >&2; exit 1; }
 
-ab click 'button.fv-run' >/dev/null 2>&1
-sleep 5
+# Wait for the run to finish rather than trusting a fixed sleep.
+for _ in $(seq 1 40); do
+  STATUS="$(ab_eval "(() => document.querySelector('.fv-status')?.textContent)()")"
+  [ "$STATUS" = "finished" ] || [ "$STATUS" = "failed" ] && break
+  sleep 0.5
+done
+[ "$STATUS" = "finished" ] || { echo "the run ended as '${STATUS:-unknown}'" >&2; exit 1; }
 
-FAILURES=0
 expect() {
   local label="$1" pattern="$2" actual="$3"
   if echo "$actual" | grep -qiE -- "$pattern"; then
@@ -80,7 +85,7 @@ ab eval "(() => {
   return 'following off';
 })()" >/dev/null 2>&1
 
-TRANSCRIPT="$(peek "(() => [...document.querySelectorAll('.fv-said')].map(e => e.textContent).join(' ~ '))()")"
+TRANSCRIPT="$(ab_eval "(() => [...document.querySelectorAll('.fv-said')].map(e => e.textContent).join(' ~ '))()")"
 echo "  ${TRANSCRIPT:0:300}..."
 echo
 expect "describes a swap"            "are swapped"                    "$TRANSCRIPT"
@@ -91,7 +96,7 @@ expect "reports the loop ending"     "The loop ran"                   "$TRANSCRI
 
 echo
 echo "=== metrics show the shape of the work ==="
-METRICS="$(peek "(() => {
+METRICS="$(ab_eval "(() => {
   const counts = [...document.querySelectorAll('.fv-metric')]
     .map(m => m.querySelector('dt').textContent + '=' + m.querySelector('dd').textContent).join(' ');
   const caption = document.querySelector('.fv-spark figcaption')?.textContent ?? 'no sparkline';
@@ -105,33 +110,47 @@ expect "the curve has real data"     "[0-9]{2,} points"               "$METRICS"
 
 echo
 echo "=== the timeline seeks to a call ==="
-TIMELINE_BEFORE="$(peek "(() => (document.querySelector('.fv-position')?.textContent ?? '-') + ' | bars=' + document.querySelectorAll('.fv-timeline-bar').length)()")"
+TIMELINE_BEFORE="$(ab_eval "(() => (document.querySelector('.fv-position')?.textContent ?? '-') + ' | bars=' + document.querySelectorAll('.fv-timeline-bar').length)()")"
 echo "  before: $TIMELINE_BEFORE"
-ab eval "(() => {
+ab_eval "(() => {
   const bars = [...document.querySelectorAll('.fv-timeline-bar')];
   const target = bars[bars.length - 1] ?? bars[0];
-  if (target) target.click();
-  return target ? 'clicked' : 'no bars';
-})()" >/dev/null 2>&1
-TIMELINE_AFTER="$(peek "(() => document.querySelector('.fv-position')?.textContent ?? '-')()")"
+  if (!target) return 'no bars';
+  target.setAttribute('data-ab-target', '1');
+  return 'tagged';
+})()" >/dev/null
+ab_click '[data-ab-target]' || fail "could not click a timeline bar"
+ab_eval "(() => { document.querySelectorAll('[data-ab-target]').forEach(
+  (e) => e.removeAttribute('data-ab-target')); return 'cleared'; })()" >/dev/null
+TIMELINE_AFTER="$(ab_eval "(() => document.querySelector('.fv-position')?.textContent ?? '-')()")"
 echo "  after:  $TIMELINE_AFTER"
 expect "timeline has bars"           "bars=[1-9]"                     "$TIMELINE_BEFORE"
-expect "clicking a bar seeks"        "step [0-9]"                     "$TIMELINE_AFTER"
+# Not just "it says step N" — the playhead has to have actually moved, and it has to land on the step
+# the clicked call began at. A pattern loose enough to match the position it started from would pass
+# while the feature did nothing.
+if [ "${TIMELINE_BEFORE%% |*}" = "$TIMELINE_AFTER" ]; then
+  fail "clicking a bar did not move the playhead (still $TIMELINE_AFTER)"
+else
+  expect "clicking a bar seeks to the call's start" "step 0 /"           "$TIMELINE_AFTER"
+fi
 
 echo
 echo "=== jumping to a variable's changes ==="
 ab press "End" >/dev/null 2>&1
-BEFORE="$(peek "(() => document.querySelector('.fv-position')?.textContent ?? '-')()")"
+BEFORE="$(ab_eval "(() => document.querySelector('.fv-position')?.textContent ?? '-')()")"
 # The click and the read have to be separate calls. React re-renders asynchronously, so reading the
 # DOM in the same evaluation that dispatched the click reports the state before the click took effect —
 # which looked like the feature not working.
-CLICKED="$(peek "(() => {
+CLICKED="$(ab_eval "(() => {
   const back = [...document.querySelectorAll('.fv-var-jump button')].find(b => b.textContent === '<');
   if (!back) return 'no jump control';
-  back.click();
-  return 'clicked';
+  back.setAttribute('data-ab-target', '1');
+  return 'tagged';
 })()")"
-AFTER="$(peek "(() => document.querySelector('.fv-position')?.textContent ?? '-')()")"
+ab_click '[data-ab-target]' || fail "could not click the jump-back control"
+ab_eval "(() => { document.querySelectorAll('[data-ab-target]').forEach(
+  (e) => e.removeAttribute('data-ab-target')); return 'cleared'; })()" >/dev/null
+AFTER="$(ab_eval "(() => document.querySelector('.fv-position')?.textContent ?? '-')()")"
 echo "  $BEFORE -> $AFTER ($CLICKED)"
 if [ "$BEFORE" = "$AFTER" ]; then
   printf '  FAIL  %-34s the playhead did not move\n' "jumping to a change"
@@ -144,7 +163,9 @@ mkdir -p /projects/sandbox/.kiro/artifacts/screenshots
 ab screenshot /projects/sandbox/.kiro/artifacts/screenshots/20260926-narration.png 2>&1 | tail -1
 
 echo
-echo "console errors: $(peek "(() => (window.__fvErrors ?? []).length)()")"
+errors="$(ab_errors)"
+echo "console errors: $errors"
+[ "$errors" = "0" ] || fail "the page reported errors: $errors"
 if [ "$FAILURES" -gt 0 ]; then
   echo "$FAILURES check(s) failed" >&2
   exit 1

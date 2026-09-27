@@ -142,6 +142,10 @@ class Runner:
         self._workdir: str | None = None
         self._guards = platform_guards()
         self._closed = False
+        # How many lines were supplied up front. The pipe is first-in-first-out, so the first this
+        # many answers the program reads are the prefilled ones and everything after was typed by a
+        # person. See _label_stdin_source.
+        self._prefilled_lines = 0
 
     @property
     def guards(self) -> dict[str, bool]:
@@ -197,8 +201,17 @@ class Runner:
 
         if self.request.stdin:
             # Prefilled input, so the run produces a fully scrubbable trace with no human involved.
+            #
+            # The trailing newline is not cosmetic. `input()` reads a *line*, so text that does not end
+            # in one leaves the program blocked on a read that can never complete: typing `Ada` into
+            # the input box and pressing Run hung the run forever, with the UI showing "running".
+            # `send_stdin` below always did this; this path did not.
+            text = self.request.stdin
+            if not text.endswith("\n"):
+                text += "\n"
+            self._prefilled_lines = text.count("\n")
             assert self._process.stdin is not None
-            self._process.stdin.write(self.request.stdin.encode("utf-8"))
+            self._process.stdin.write(text.encode("utf-8"))
             await self._process.stdin.drain()
 
     async def events(self) -> AsyncIterator[dict[str, Any]]:
@@ -238,13 +251,36 @@ class Runner:
             if not text:
                 continue
             try:
-                yield json.loads(text)
+                event = json.loads(text)
             except json.JSONDecodeError:
                 yield {
                     "t": "note",
                     "level": "warn",
                     "text": "An unreadable line arrived from the tracer and was skipped.",
                 }
+                continue
+            if event.get("t") == "stdin_response":
+                self._label_stdin_source(event)
+            yield event
+
+    def _label_stdin_source(self, event: dict[str, Any]) -> None:
+        """Say where an answer actually came from.
+
+        The tracer cannot know. From inside the traced program, input supplied up front and input
+        typed by a person are the same bytes on the same pipe; all it can do is time the read, which
+        mislabels anything answered by a machine faster than a human could. Here the answer is known
+        exactly, because this is the end that supplied it: a pipe is first-in-first-out, so the first
+        `_prefilled_lines` answers are the prefilled ones and every answer after them was typed while
+        the program waited.
+
+        The measured `waited_ms` the tracer recorded is left alone. It is a fact, and it is the more
+        interesting one for anyone asking how long a run sat idle.
+        """
+        if self._prefilled_lines > 0:
+            self._prefilled_lines -= 1
+            event["source"] = "prefilled"
+        else:
+            event["source"] = "interactive"
 
     async def send_stdin(self, text: str) -> None:
         """Answer a blocking read in the traced program."""

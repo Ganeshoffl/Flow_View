@@ -13,7 +13,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=scripts/_env.sh
 source "$ROOT/scripts/_env.sh"
-SESSION="${1:-fv-heap}"
+AB_SESSION="${1:-fv-heap}"
 cd "$ROOT"
 
 cleanup() {
@@ -39,38 +39,62 @@ done
 echo " server=${api:-down} ui=${web:-down}"
 [ "${api:-}" = "200" ] && [ "${web:-}" = "200" ] || { tail -20 /tmp/fv-heap-server.log; exit 1; }
 
-ab() { agent-browser --session "$SESSION" "$@"; }
-peek() { ab eval "$1" 2>&1 | tail -2 | head -1 | sed 's/^"//; s/"$//; s/\\"/"/g'; }
+FAILURES=0
+fail() { printf '  FAIL  %s\n' "$1"; FAILURES=$((FAILURES + 1)); }
 
 ab open "http://127.0.0.1:5173/" >/dev/null 2>&1
+sleep 2
+ab_instrument >/dev/null
 ab snapshot >/dev/null 2>&1
 
 # Replace the editor contents and run.
+#
+# Every step is checked. This used to set the textarea through a synthetic event and click blind, and
+# when the clicks silently stopped landing the gate happily reported on a heap from the previous
+# program.
 run_program() {
+  local source="$1" label="$2" runs_before runs_after
+  runs_before="$(grep -c 'POST /api/session' /tmp/fv-heap-server.log)"
+
   # After a run the traced code occupies the left pane, so go back to the editor first.
-  ab eval "(() => {
-    const toggle = [...document.querySelectorAll('button')].find(b => b.textContent === 'Edit code');
-    if (toggle) toggle.click();
-    return toggle ? 'switched to editor' : 'already editing';
-  })()" >/dev/null 2>&1
-  ab eval "(() => {
-    const area = document.querySelector('.fv-editor-area');
-    if (!area) return 'no editor';
-    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
-    setter.call(area, $1);
-    area.dispatchEvent(new Event('input', { bubbles: true }));
-    return 'set';
-  })()" >/dev/null 2>&1
-  ab click 'button.fv-run' >/dev/null 2>&1
-  sleep 3
+  if ab_eval "(() => [...document.querySelectorAll('button')].some(
+        (b) => b.textContent.trim() === 'Edit code'))()" | grep -q true; then
+    ab_click_text button "Edit code" || { fail "$label: could not switch back to the editor"; return 1; }
+  fi
+
+  ab fill '.fv-editor-area' "$source" >/dev/null 2>&1
+  local got
+  got="$(ab get value '.fv-editor-area' 2>&1 | tail -2 | head -1)"
+  if [ -z "$got" ]; then
+    fail "$label: the editor did not take the program"
+    return 1
+  fi
+
+  ab_click 'button.fv-run' || { fail "$label: the run button was not clicked"; return 1; }
+
+  # Wait for the run to actually finish rather than trusting a fixed sleep.
+  local status=""
+  for _ in $(seq 1 30); do
+    status="$(ab_eval "(() => document.querySelector('.fv-status')?.textContent)()")"
+    [ "$status" = "finished" ] || [ "$status" = "failed" ] && break
+    sleep 0.5
+  done
+  runs_after="$(grep -c 'POST /api/session' /tmp/fv-heap-server.log)"
+  if [ "$runs_after" -le "$runs_before" ]; then
+    fail "$label: no new session was created (still $runs_after)"
+    return 1
+  fi
+  if [ "$status" != "finished" ]; then
+    fail "$label: run ended as '${status:-unknown}'"
+    return 1
+  fi
 }
 
-# Collect every shape the heap drew, by clicking across the canvas.
+# Collect every shape the heap drew.
 #
-# Positions are not in the DOM — the drawing is a canvas — and a tidy tree centres its root rather than
-# putting it at the origin, so a single fixed click cannot be relied on to hit anything in particular.
+# Positions are not in the DOM — the drawing is a canvas — so the structure chips are what we read.
 inspect() {
-  peek "(() => {
+  ab_eval "(() => {
     const count = document.querySelector('.fv-heap-actions .fv-muted')?.textContent ?? '-';
     const found = [...document.querySelectorAll('.fv-structure')].map(b =>
       b.dataset.shape + ' [' + b.dataset.confidence + '] ' + (b.title || '').replace(/\\n/g, ' | '));
@@ -80,7 +104,7 @@ inspect() {
 
 check() {
   local label="$1" program="$2" expect="$3"
-  run_program "$program"
+  run_program "$program" "$label" || return
   local result
   result="$(inspect)"
   if echo "$result" | grep -qi "$expect"; then
@@ -91,44 +115,132 @@ check() {
   fi
 }
 
-FAILURES=0
-NODE="'class Node:\\n    def __init__(self, v):\\n        self.v = v\\n        self.next = None\\n'"
-TREE="'class T:\\n    def __init__(self, k):\\n        self.k = k\\n        self.left = None\\n        self.right = None\\n'"
+NODE='class Node:
+    def __init__(self, v):
+        self.v = v
+        self.next = None
+'
+TREE='class T:
+    def __init__(self, k):
+        self.k = k
+        self.left = None
+        self.right = None
+'
 
 echo
 echo "=== structures the heap view must recognise ==="
-check "linked list" "$NODE + 'a = Node(1)\\na.next = Node(2)\\na.next.next = Node(3)\\n'" "linked_list"
-check "binary search tree" "$TREE + 'r = T(8)\\nr.left = T(3)\\nr.right = T(10)\\nr.left.left = T(1)\\n'" "bst"
-check "grid" "'grid = [[1,2,3],[4,5,6],[7,8,9]]\\nx = grid[0][0]\\n'" "matrix"
-check "cycle in a tree class" "$TREE + 'r = T(1)\\nc = T(2)\\nr.left = c\\nc.right = r\\nd = 1\\n'" "graph"
-check "stack" "'s = []\\ns.append(1)\\ns.append(2)\\ns.append(3)\\ns.pop()\\n'" "stack\\|push"
-check "circular list" "$NODE + 'a = Node(1)\\nb = Node(2)\\nc = Node(3)\\na.next = b\\nb.next = c\\nc.next = a\\n'" "circular\\|returns to where"
+check "linked list" "${NODE}a = Node(1)
+a.next = Node(2)
+a.next.next = Node(3)
+" "linked_list"
+check "binary search tree" "${TREE}r = T(8)
+r.left = T(3)
+r.right = T(10)
+r.left.left = T(1)
+" "bst"
+check "grid" 'grid = [[1,2,3],[4,5,6],[7,8,9]]
+x = grid[0][0]
+' "matrix"
+check "cycle in a tree class" "${TREE}r = T(1)
+c = T(2)
+r.left = c
+c.right = r
+d = 1
+" "graph"
+check "stack" 's = []
+s.append(1)
+s.append(2)
+s.append(3)
+s.pop()
+' "stack\|push"
+check "circular list" "${NODE}a = Node(1)
+b = Node(2)
+c = Node(3)
+a.next = b
+b.next = c
+c.next = a
+" "circular\|returns to where"
+
+echo
+echo "=== two runs in one page load ==="
+# The regression this gate missed once already: only the first run ever reached the server.
+before="$(grep -c 'POST /api/session' /tmp/fv-heap-server.log)"
+run_program 'x = 1
+y = x + 1
+' "consecutive run A"
+run_program 'p = [1, 2]
+p.append(3)
+' "consecutive run B"
+after="$(grep -c 'POST /api/session' /tmp/fv-heap-server.log)"
+if [ "$((after - before))" -eq 2 ]; then
+  printf '  ok    %-22s two runs, two sessions\n' "run again"
+else
+  fail "run again: expected 2 new sessions, got $((after - before))"
+fi
+
+echo
+echo "=== the shell never scrolls its controls away ==="
+# A short viewport used to push the header and the run button off the top of the screen.
+for size in "1280 800" "1280 577" "1100 520"; do
+  set -- $size
+  ab resize "$1" "$2" >/dev/null 2>&1 || ab_eval "(() => 'no resize')()" >/dev/null
+  sleep 1
+  verdict="$(ab_eval "(() => {
+    const d = document.documentElement;
+    const run = document.querySelector('button.fv-run').getBoundingClientRect();
+    const onScreen = run.top >= 0 && run.bottom <= window.innerHeight;
+    return 'docScrolls=' + (d.scrollHeight > d.clientHeight + 1) + ' runVisible=' + onScreen +
+      ' runTop=' + Math.round(run.top);
+  })()")"
+  if echo "$verdict" | grep -q 'docScrolls=false runVisible=true'; then
+    printf '  ok    %-22s %s\n' "${1}x${2}" "$verdict"
+  else
+    fail "${1}x${2}: $verdict"
+  fi
+done
+ab resize 1280 800 >/dev/null 2>&1
 
 echo
 echo "=== the raw view is always available ==="
-run_program "$TREE + 'r = T(5)\\nr.left = T(3)\\n'"
-ab click 'button.fv-mini' >/dev/null 2>&1
-peek "(() => {
+run_program "${TREE}r = T(5)
+r.left = T(3)
+" "raw mode"
+ab_click 'button.fv-mini' || fail "raw mode: toggle not clicked"
+ab_eval "(() => {
   const on = document.querySelector('.fv-mini')?.classList.contains('is-on');
   const count = document.querySelector('.fv-heap-actions .fv-muted')?.textContent ?? '-';
-  return 'raw mode on: ' + on + ', ' + count;
+  return '  raw mode on: ' + on + ', ' + count;
 })()"
 
 # Back out of raw mode, or every screenshot below shows it.
-ab click 'button.fv-mini' >/dev/null 2>&1
+ab_click 'button.fv-mini' || fail "raw mode: could not turn off"
 
 mkdir -p /projects/sandbox/.kiro/artifacts/screenshots
 echo
 echo "=== screenshots ==="
-run_program "$TREE + 'root = T(8)\\nroot.left = T(3)\\nroot.right = T(10)\\nroot.left.left = T(1)\\nroot.left.right = T(6)\\n'"
+run_program "${TREE}root = T(8)
+root.left = T(3)
+root.right = T(10)
+root.left.left = T(1)
+root.left.right = T(6)
+" "bst screenshot"
 ab screenshot /projects/sandbox/.kiro/artifacts/screenshots/20260926-heap-bst.png 2>&1 | tail -1
-run_program "$NODE + 'head = Node(1)\\nhead.next = Node(2)\\nhead.next.next = Node(3)\\n'"
+run_program "${NODE}head = Node(1)
+head.next = Node(2)
+head.next.next = Node(3)
+" "list screenshot"
 ab screenshot /projects/sandbox/.kiro/artifacts/screenshots/20260926-heap-list.png 2>&1 | tail -1
 
 echo
-echo "console errors: $(peek "(() => (window.__fvErrors ?? []).length)()")"
+errors="$(ab_errors)"
+echo "console errors: $errors"
+case "$errors" in
+  0) ;;
+  *) fail "the page reported errors: $errors" ;;
+esac
+
 if [ "$FAILURES" -gt 0 ]; then
-  echo "$FAILURES structure(s) drawn wrongly" >&2
+  echo "$FAILURES check(s) failed" >&2
   exit 1
 fi
 echo "every structure was recognised and explained"

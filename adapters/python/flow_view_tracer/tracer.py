@@ -950,9 +950,26 @@ class _InputBridge:
     would put it. A prompt is not program output; it is a question, and the UI needs to show it as
     one rather than as a stray line of text.
 
-    Phase 1 records input supplied up front. Phase 5 adds the blocking round trip to the browser;
-    this is the half that makes a trace deterministic, and it is needed either way.
+    Both kinds of input work: supplied up front, or typed while the program waits. The difference is
+    measured rather than declared — see WAIT_IS_A_PERSON_MS.
     """
+
+    #: Above this wait, the answer came from a person rather than from a buffer.
+    #:
+    #: The distinction cannot be asked about from in here: prefilled input and a typed answer both
+    #: arrive as bytes on stdin, indistinguishable. But they take wildly different amounts of time,
+    #: and that is observable. Input already sitting in the pipe returns in microseconds; a person has
+    #: to read the question before they can start typing, which no one does in a quarter of a second.
+    #:
+    #: The gap between those two is about three orders of magnitude, so the threshold does not need to
+    #: be precise — and the measurement itself is recorded on the event, so a reader can second-guess
+    #: the label instead of having to trust it. This used to be hardcoded to "prefilled", which
+    #: quietly asserted that no human was ever involved in any run.
+    #:
+    #: This is the best the adapter can do alone, which is what matters when the CLI is used directly
+    #: with a redirected or a terminal stdin. Under the server, the label is replaced by one that is
+    #: exact, because the server is the end that supplied the input: see Runner._label_stdin_source.
+    WAIT_IS_A_PERSON_MS = 250.0
 
     def __init__(self, tracer: Tracer, stdin: Any) -> None:
         self._tracer = tracer
@@ -976,7 +993,10 @@ class _InputBridge:
         finally:
             tracer._muted = False  # noqa: SLF001 - same package
 
+        clock = tracer.emitter.elapsed_ms
+        asked_at = clock()
         supplied = self._stdin.readline()
+        waited_ms = round(clock() - asked_at, 3)
         if supplied == "":
             # No more input. Raising EOFError is what real `input` does, so the program behaves as it
             # would outside flow_view.
@@ -993,7 +1013,14 @@ class _InputBridge:
         tracer._muted = True  # noqa: SLF001 - same package
         try:
             tracer.emitter.emit(
-                "stdin_response", {"text": answer, "source": "prefilled"}
+                "stdin_response",
+                {
+                    "text": answer,
+                    "source": (
+                        "interactive" if waited_ms >= self.WAIT_IS_A_PERSON_MS else "prefilled"
+                    ),
+                    "waited_ms": waited_ms,
+                },
             )
         finally:
             tracer._muted = False  # noqa: SLF001 - same package

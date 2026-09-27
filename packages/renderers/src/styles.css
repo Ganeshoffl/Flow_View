@@ -82,10 +82,25 @@ select {
 
 /* ---------------------------------------------------------------- layout */
 
+/*
+ * The shell is exactly one viewport tall and never scrolls.
+ *
+ * It used to scroll, and that cost the user the Run button. The pane grid's row minimums add up to
+ * ~604px; once a run finishes the run bar grows to ~117px (it gains the playback bar and the guards
+ * line), and on a 577px-tall viewport — an ordinary 1366x768 laptop with browser chrome — the total
+ * overflowed `100vh`. With no `overflow` here that overflow escaped onto the body, the document
+ * scrolled 207px, and the header and every control went off the top of the screen. The only way back
+ * was to scroll up, which is not discoverable when the thing you are looking for is the run button.
+ *
+ * So: the shell clips, and `.fv-main` below owns the scrolling instead. Controls stay put; the panes
+ * give way. `dvh` keeps that true while mobile browser chrome slides in and out.
+ */
 .fv-app {
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto auto minmax(0, 1fr);
   height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
   gap: 10px;
   padding: 10px;
 }
@@ -138,6 +153,11 @@ select {
     "timeline  timeline  timeline";
   gap: 10px;
   min-height: 0;
+  /*
+   * When the viewport is too short for the row minimums above, the panes scroll here rather than
+   * pushing the header and the run bar off the screen.
+   */
+  overflow: auto;
 }
 
 .fv-area {
@@ -697,8 +717,17 @@ select {
     grid-template-rows: auto auto;
   }
 
+  /*
+   * One column is deliberately taller than the viewport, so here the document is what scrolls and
+   * the shell must stop clipping and stop owning a scrollbar of its own.
+   */
   .fv-app {
     height: auto;
+    overflow: visible;
+  }
+
+  .fv-main {
+    overflow: visible;
   }
 }
 

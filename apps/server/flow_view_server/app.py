@@ -245,8 +245,34 @@ async def _pump(websocket: WebSocket, runner: Runner) -> None:
         last_flush = time.monotonic()
         await websocket.send_json({"type": "events", "events": payload})
 
+    # Events are read in one task so that the batch can be flushed on a timer as well as on arrival.
+    #
+    # Batching used to be driven purely by the arrival of the next event, which deadlocked any program
+    # that stopped to ask a question: the `stdin_request` went into the batch, the batch was under its
+    # interval so it was not sent, and the next event — the answer — could never arrive, because the
+    # question was sitting unsent in the batch. The UI showed "running" forever.
+    events = runner.events()
+    pending: asyncio.Task[dict[str, Any]] | None = None
+
     try:
-        async for event in runner.events():
+        while True:
+            if pending is None:
+                pending = asyncio.ensure_future(anext(events))  # type: ignore[arg-type]
+
+            # With nothing buffered there is nothing to time out for, so wait for the next event.
+            timeout = BATCH_INTERVAL if batch else None
+            done, _ = await asyncio.wait({pending}, timeout=timeout)
+            if not done:
+                # The window closed while the program was quiet. Send what we have.
+                await flush()
+                continue
+
+            task, pending = pending, None
+            try:
+                event = task.result()
+            except StopAsyncIteration:
+                break
+
             # The header arrives first and alone, so the UI can set up before any event lands.
             if "session" in event:
                 await websocket.send_json(
@@ -282,4 +308,9 @@ async def _pump(websocket: WebSocket, runner: Runner) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        if pending is not None:
+            pending.cancel()
+            with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
+                await pending
+        await events.aclose()
         await runner.stop()
