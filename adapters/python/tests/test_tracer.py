@@ -534,6 +534,64 @@ class TestLibraryBoundary:
         mine = [e for e in traced.of("frame_push") if e["func"] == "mine"][0]
         assert mine["kind"] == "user"
 
+    def test_a_library_call_adds_nothing_of_its_own_to_the_heap(self) -> None:
+        """An opaque call's interior is not the program's state either.
+
+        The frame is not stepped, but `handle_return` used to diff its locals and walk its heap on the
+        way out, which put a JSONEncoder and a codec's IncrementalDecoder on screen for programs that
+        had only called `json.dumps` and `input`. It was also asking the wrong file while it did so:
+        `self.analysis` describes the *user's* source, and a library frame's pending line is a line
+        number in someone else's.
+        """
+        traced = Traced("import json\nd = {'a': 1}\ns = json.dumps(d)\n")
+        announced = [e["type_name"] for e in traced.of("obj_new")]
+        # The json module, because `import json` binds it, and the user's own dict. Nothing else: no
+        # encoder, no kwargs dict the program never wrote.
+        assert announced == ["module", "dict"], f"the library put its own objects on the heap: {announced}"
+
+    def test_a_library_call_is_one_frame_and_not_its_whole_call_tree(self) -> None:
+        """Opaque means the user sees the call they made, not the machinery underneath it.
+
+        `json.dumps` reaches `encode`, which reaches `iterencode`. All three used to be announced, so a
+        loop of twenty calls put sixty frames on the stack pane for twenty things the user wrote. Only
+        the outermost frame - the one user code actually called - belongs in the trace.
+        """
+        traced = Traced("import json\nout = []\nfor i in range(5):\n    out.append(json.dumps({'i': i}))\n")
+        library = [e for e in traced.of("frame_push") if e["kind"] == "library"]
+        names = {e["func"] for e in library}
+
+        assert len(library) == 5, f"expected one frame per call, got {len(library)}: {names}"
+        assert names == {"dumps"}, f"internals leaked into the trace: {names - {'dumps'}}"
+
+    def test_importing_a_module_does_not_trace_the_import_machinery(self, tmp_path: Any) -> None:
+        # `import x` on a two-line program used to cost 227 steps, nearly all of it
+        # importlib._bootstrap. A reader looking for their own two lines had to find them among
+        # `_find_and_load`, `_path_importer_cache`, `source_to_code` and forty others.
+        (tmp_path / "freshly_imported.py").write_text("VALUE = 42\n", encoding="utf-8")
+        sys.path.insert(0, str(tmp_path))
+        try:
+            sys.modules.pop("freshly_imported", None)
+            traced = Traced("import freshly_imported\nx = freshly_imported.VALUE\n")
+        finally:
+            sys.path.remove(str(tmp_path))
+            sys.modules.pop("freshly_imported", None)
+
+        steps = [e for e in traced.events if "step" in e]
+        names = {e["func"] for e in traced.of("frame_push")}
+        assert len(steps) < 20, (
+            f"a two-line program took {len(steps)} steps; the import machinery is being traced: {names}"
+        )
+        assert "_find_and_load_unlocked" not in names
+        assert "source_to_code" not in names
+
+    def test_a_callback_a_library_calls_back_into_is_still_the_users_code(self) -> None:
+        # The other side of the same rule. Skipping a library's internals must not skip the user's own
+        # function when the library calls it - `in_scope` has to look past the frames in between.
+        traced = Traced("def rank(v):\n    return -v\n\nxs = sorted([3, 1, 2], key=rank)\n")
+        calls = [e for e in traced.of("frame_push") if e["func"] == "rank"]
+        assert len(calls) == 3, f"the key function ran three times, the trace shows {len(calls)}"
+        assert all(e["kind"] == "user" for e in calls)
+
 
 # ---------------------------------------------------------------------------
 # performance

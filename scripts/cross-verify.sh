@@ -103,7 +103,13 @@ else
   echo "  skipped"
 fi
 
-heading "8. repository"
+heading "8. the tests themselves"
+# Reverts each fix and requires the suite to notice. Two fixes in this repository once had no test that
+# failed without them, which is indistinguishable from not having fixed anything. `--quick` skips the
+# repeat runs that re-check the two former flakes; run the script directly for those.
+run "every fix has a test that fails without it" bash scripts/verify-fixes.sh --quick
+
+heading "9. repository"
 run "working tree is clean" bash -c '[ -z "$(git status --porcelain)" ]'
 # Compare against whatever this branch tracks, not against main. Hardcoding origin/main meant the
 # check could only ever pass on one branch, and quietly failed on every other for the wrong reason.

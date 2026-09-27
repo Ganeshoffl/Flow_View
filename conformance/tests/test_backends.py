@@ -235,3 +235,48 @@ class TestTheGarbageCollectorIsNotTheProgram:
         assert not Tracer._is_foreign_finalizer(tracer, Frame()), "the user's own __del__ was refused"
         Code.co_filename = "/usr/lib/python3.12/codecs.py"
         assert Tracer._is_foreign_finalizer(tracer, Frame()), "a library __del__ was allowed through"
+
+
+class TestACallbackReachedThroughALibrary:
+    """The user's own function, called by a library, from a frame that is not announced.
+
+    Library internals are no longer announced - `json.dumps` is one frame, not three - which means the
+    frames between the call and a callback are invisible to the tracer. `in_scope` therefore has to walk
+    the stack rather than ask about the immediate caller, or the callback is judged out of scope and
+    dropped.
+
+    `sorted(key=...)` does not exercise this: `sorted` is a C function with no Python frame, so the
+    callback's caller is the module frame and the immediate check is enough. `json.dumps(default=...)`
+    does, because the call comes from `json.encoder` in Python. Checking with the easy case only would
+    have passed with the walk removed - and did.
+    """
+
+    SOURCE = (
+        "import json\n"
+        "\n"
+        "def handler(o):\n"
+        "    return 'seen'\n"
+        "\n"
+        "s = json.dumps({'k': set()}, default=handler)\n"
+    )
+
+    @pytest.mark.parametrize("backend", ["settrace", "monitoring"])
+    def test_the_callback_is_traced(self, backend: str) -> None:
+        if backend == "monitoring" and not monitoring_available():
+            pytest.skip("sys.monitoring needs Python 3.12+")
+        events = trace(self.SOURCE, backend)
+        user = [e["func"] for e in events if e["t"] == "frame_push" and e.get("kind") == "user"]
+        assert "handler" in user, (
+            f"{backend} dropped the callback the library called; frames were {user}"
+        )
+
+    @needs_monitoring
+    def test_both_backends_see_it(self) -> None:
+        def user_frames(backend: str) -> list[str]:
+            return [
+                e["func"]
+                for e in trace(self.SOURCE, backend)
+                if e["t"] == "frame_push" and e.get("kind") == "user"
+            ]
+
+        assert user_frames("monitoring") == user_frames("settrace")

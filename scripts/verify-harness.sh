@@ -63,10 +63,14 @@ for kind in "throw new Error('planted sync error')|planted sync error|an uncaugh
   IFS='|' read -r code needle label <<<"$kind"
   ab_eval "(() => { setTimeout(() => { $code }, 0); return 'planted'; })()" >/dev/null
   sleep 1
-  if ab_errors | grep -q "$needle"; then
+  # Captured first. Piping a command straight into `grep -q` under `set -o pipefail` reports the
+  # producer's SIGPIPE as the pipeline's status whenever grep matches early enough to kill it, so the
+  # test would read as failed exactly when it passed.
+  recorded="$(ab_errors)"
+  if echo "$recorded" | grep -q "$needle"; then
     printf '  ok    %s is recorded\n' "$label"
   else
-    printf '  FAIL  %s was not recorded: %s\n' "$label" "$(ab_errors)"
+    printf '  FAIL  %s was not recorded: %s\n' "$label" "$recorded"
     FAILURES=$((FAILURES+1))
   fi
 done

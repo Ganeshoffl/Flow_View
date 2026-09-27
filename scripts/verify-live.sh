@@ -142,7 +142,8 @@ expect "the run names its sandbox guards" "Protecting this run"       "$GUARDS"
 
 echo
 echo "=== step backward through the recorded trace ==="
-if ab_eval "(() => document.querySelector('.fv-follow input')?.checked)()" | grep -q true; then
+following="$(ab_eval "(() => document.querySelector('.fv-follow input')?.checked)()")"
+if echo "$following" | grep -q true; then
   ab_click '.fv-follow input' || fail "could not stop following the live edge"
 fi
 BEFORE="$(ab_eval "(() => document.querySelector('.fv-position')?.textContent?.trim())()")"
