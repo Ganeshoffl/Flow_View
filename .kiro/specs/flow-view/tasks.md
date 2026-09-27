@@ -142,14 +142,33 @@ state, and never exhausts browser memory. Seek latency stays inside the 50 ms bu
 
 ## Phase 5 — Interactive input
 
-- [ ] 5.1 `stdin_request` blocking protocol through runner, server and UI
-- [ ] 5.2 Input prompt UI with history, appearing exactly where execution paused
-- [ ] 5.3 Prefilled-stdin mode producing a fully scrubbable trace with no human in the loop
-- [ ] 5.4 Deterministic replay from recorded `stdin_response` events
+Mostly landed early, and not because it was brought forward. The blocking protocol was already
+written; what stopped it working was three buffers in a row, each of which looked like a performance
+detail rather than a correctness one:
+
+- the tracer never flushed, so Python's 8 KB pipe buffer held the question;
+- the server decided whether to flush a batch only when the *next* event arrived, which for a blocked
+  program is never;
+- prefilled stdin was written without the trailing newline that `input()` needs to return.
+
+Any one of them deadlocks the run with the UI showing "running". Fixing them also exposed that every
+wall-clock deadline in the stack was timing the *person*: a run was killed for "timeout" when
+somebody had spent thirty seconds reading the question.
+
+- [x] 5.1 `stdin_request` blocking protocol through runner, server and UI
+- [x] 5.2 Input prompt UI, appearing where execution paused — no history yet
+- [x] 5.3 Prefilled-stdin mode producing a fully scrubbable trace with no human in the loop
+- [x] 5.4 Deterministic replay from recorded `stdin_response` events
+- [x] 5.6 Time spent waiting for a person excluded from the program's execution budget and clock
 - [ ] 5.5 Back-stepping across an input boundary, then forward again, without re-prompting
+- [ ] 5.7 Prompt history, so a re-run can be answered the same way without retyping
 
 **Gate:** a program that asks three questions runs interactively, then replays start to finish from the
 saved trace with no prompting and byte-identical results.
+
+Currently proven for one question (`scripts/verify-live.sh`, plus
+`TestAProgramThatStopsToAskAQuestion`). The three-question case and back-stepping across an input
+boundary are what remain.
 
 ---
 
