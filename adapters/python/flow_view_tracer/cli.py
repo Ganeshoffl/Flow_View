@@ -97,6 +97,16 @@ def main(argv: list[str] | None = None) -> int:
     for name, reason in guards.unavailable:
         emitter.note("warn", f"The {name} guard is not active on this platform: {reason}")
 
+    # Say so before the run, because the alternative is a reader concluding their __del__ never ran.
+    for line in tracer.analysis.finalizer_lines:
+        emitter.note(
+            "warn",
+            f"The __del__ on line {line} will not run where it would outside flow_view. Tracing "
+            "holds on to objects so their ids stay stable, which delays collection until after the "
+            "run, so anything the finalizer prints may be missing from this trace entirely.",
+            once=False,
+        )
+
     status = tracer.run()
     events_out.flush()
     return 0 if status in ("ok", "step_limit", "timeout") else 1

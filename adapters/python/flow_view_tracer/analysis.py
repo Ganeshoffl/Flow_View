@@ -177,6 +177,11 @@ class SourceAnalysis:
         self._starts: list[int] = []
         self._loops: dict[int, LoopInfo] = {}
         self._failed: str | None = None
+        #: Lines where the program defines a ``__del__``.
+        #:
+        #: Needed because flow_view cannot show one running at the right moment, and has to say so
+        #: rather than let the reader conclude it never runs. See Registry in walk.py.
+        self.finalizer_lines: list[int] = []
         self._build(source)
 
     # -- construction ------------------------------------------------------
@@ -193,6 +198,9 @@ class SourceAnalysis:
         collected: dict[int, LineInfo] = {}
 
         for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "__del__":
+                self.finalizer_lines.append(node.lineno)
+
             if not isinstance(node, ast.stmt):
                 continue
 

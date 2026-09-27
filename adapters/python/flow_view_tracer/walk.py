@@ -116,6 +116,22 @@ class Registry:
     That deliberately extends the lifetime of objects the traced program has dropped. The trade is
     accepted: a visualizer whose object ids silently start pointing at different objects is worse
     than one that uses more memory. The step budget bounds how far it can go.
+
+    The cost is larger than memory, and saying "memory" here was underselling it. Holding a reference
+    means the program's own ``__del__`` does not run when the program says it does. Measured on
+    ``n = Noisy(); del n; print("after")``:
+
+        plain python   gone / after the del
+        flow_view      after the del
+
+    The finalizer runs at interpreter shutdown instead, outside the traced region, so its output is
+    missing from the trace rather than merely late. A reader would conclude ``__del__`` never ran.
+
+    Not silently accepted: the adapter finds ``__del__`` definitions in the source and warns for each
+    one. A proper fix means weak references where the type allows them (user classes do; ``list`` and
+    ``dict`` do not) plus ``obj_free`` events emitted from the death callback, and emitting trace
+    events from a weakref callback that can fire anywhere is its own hazard. Recorded rather than
+    attempted in passing — see docs/decisions/0005-object-identity-and-finalizers.md.
     """
 
     __slots__ = ("_ids", "_keep", "_next", "_on_new")

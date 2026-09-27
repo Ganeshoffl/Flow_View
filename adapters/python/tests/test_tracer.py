@@ -770,3 +770,54 @@ class TestWaitingForAPersonIsNotTheProgramRunning:
             "import time\nfor i in range(50):\n    time.sleep(0.02)\n", limits=Limits(wall_ms=100)
         )
         assert traced.status == "timeout"
+
+
+
+class TestSayingWhatTracingChanges:
+    """Where flow_view cannot show a program faithfully, it has to admit it.
+
+    Keeping object ids stable means holding a reference to every object the trace mentions, which means
+    the program's own `__del__` does not run when the program says it does — it runs at interpreter
+    shutdown, outside the traced region, so its output is missing from the trace rather than late.
+    Measured: `n = Noisy(); del n; print("after")` prints `gone / after the del` in plain Python and
+    only `after the del` here.
+
+    Silence would leave a reader concluding their finalizer never ran. See
+    docs/decisions/0005-object-identity-and-finalizers.md.
+    """
+
+    def test_a_finalizer_is_found_in_the_source(self) -> None:
+        from flow_view_tracer.analysis import SourceAnalysis
+
+        analysis = SourceAnalysis(
+            "main.py",
+            "class A:\n    def __del__(self):\n        pass\n\nclass B:\n    def __del__(self):\n"
+            "        pass\n",
+        )
+        assert analysis.finalizer_lines == [2, 6]
+
+    def test_an_ordinary_program_has_none(self) -> None:
+        from flow_view_tracer.analysis import SourceAnalysis
+
+        analysis = SourceAnalysis("main.py", "a = 1\ndef f(x):\n    return x\nprint(f(a))\n")
+        assert analysis.finalizer_lines == []
+
+    def test_a_method_merely_named_like_one_elsewhere_is_not_confused(self) -> None:
+        from flow_view_tracer.analysis import SourceAnalysis
+
+        analysis = SourceAnalysis("main.py", "def delete(self):\n    pass\n\n__delattr__ = 1\n")
+        assert analysis.finalizer_lines == []
+
+    def test_the_finalizer_really_does_not_run_inside_the_run(self) -> None:
+        # The claim the warning makes, checked rather than asserted in prose. If this ever starts
+        # failing, the warning has become a lie and the decision record needs revisiting - which would
+        # be good news.
+        traced = Traced(
+            'class Noisy:\n    def __del__(self):\n        print("gone")\n\n'
+            'n = Noisy()\ndel n\nprint("after")\n'
+        )
+        printed = "".join(e["text"] for e in traced.of("stdout"))
+        assert "after" in printed
+        assert "gone" not in printed, (
+            "the finalizer now runs inside the traced region, so the warning is no longer true"
+        )
