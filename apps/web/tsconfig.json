@@ -13,7 +13,8 @@
       "@flow-view/trace-store": ["../../packages/trace-store/src/index.ts"],
       "@flow-view/trace-fixtures": ["../../packages/trace-fixtures/src/index.ts"],
       "@flow-view/renderers": ["../../packages/renderers/src/index.ts"],
-      "@flow-view/inference": ["../../packages/inference/src/index.ts"]
+      "@flow-view/inference": ["../../packages/inference/src/index.ts"],
+      "@flow-view/narration": ["../../packages/narration/src/index.ts"]
     }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]

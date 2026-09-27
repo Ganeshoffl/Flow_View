@@ -83,6 +83,7 @@ export function VariablesPane({
                   key={name}
                   name={name}
                   value={value}
+                  frame={frame.frame}
                   scope={frame.scopes.get(name)}
                   changed={changed.has(name)}
                   language={language}
@@ -102,6 +103,8 @@ export function VariablesPane({
 interface RowProps {
   readonly name: string;
   readonly value: Value;
+  /** Owning frame, needed to seek to this variable's changes. */
+  readonly frame: number;
   readonly scope: string | undefined;
   readonly changed: boolean;
   readonly language: Language;
@@ -113,6 +116,7 @@ interface RowProps {
 function VariableRow({
   name,
   value,
+  frame,
   scope,
   changed,
   language,
@@ -129,6 +133,30 @@ function VariableRow({
       <td className="fv-var-name">
         {name}
         {scope === "param" ? <span className="fv-badge">param</span> : null}
+        {/*
+          Jump to where this variable changes.
+
+          "When did this become wrong?" is the question someone actually has when they open a
+          visualizer, and stepping one line at a time to find out is the slow way to answer it.
+        */}
+        <span className="fv-var-jump">
+          <button
+            type="button"
+            title={`Go back to the previous change of ${name}`}
+            aria-label={`Previous change of ${name}`}
+            onClick={() => store.seekChange({ kind: "variable", frame, name }, -1)}
+          >
+            &lt;
+          </button>
+          <button
+            type="button"
+            title={`Go forward to the next change of ${name}`}
+            aria-label={`Next change of ${name}`}
+            onClick={() => store.seekChange({ kind: "variable", frame, name }, 1)}
+          >
+            &gt;
+          </button>
+        </span>
       </td>
       <td
         className="fv-var-value"

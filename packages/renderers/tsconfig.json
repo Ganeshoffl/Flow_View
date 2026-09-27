@@ -9,6 +9,7 @@
   "references": [
     { "path": "../trace-schema" },
     { "path": "../trace-store" },
-    { "path": "../inference" }
+    { "path": "../inference" },
+    { "path": "../narration" }
   ]
 }

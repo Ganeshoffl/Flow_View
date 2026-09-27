@@ -3,6 +3,8 @@ export * from "./icons.js";
 export * from "./layout.js";
 export * from "./useStore.js";
 export * from "./HeapPane.js";
+export * from "./NarrationPane.js";
+export * from "./TimelinePane.js";
 export * from "./CodePane.js";
 export * from "./StackPane.js";
 export * from "./VariablesPane.js";

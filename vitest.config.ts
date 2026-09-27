@@ -16,6 +16,7 @@ export default defineConfig({
       "@flow-view/trace-fixtures": src("trace-fixtures"),
       "@flow-view/inference": src("inference"),
       "@flow-view/renderers": src("renderers"),
+      "@flow-view/narration": src("narration"),
     },
   },
   test: {

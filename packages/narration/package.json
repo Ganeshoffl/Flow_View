@@ -1,34 +1,28 @@
 {
-  "name": "@flow-view/renderers",
+  "name": "@flow-view/narration",
   "version": "0.1.0",
-  "description": "Views over a Universal Trace: code, stack, variables, output, metrics, playback",
+  "description": "Plain-English narration generated from a trace by template, with no model involved",
   "license": "MIT",
   "type": "module",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./styles.css": "./src/styles.css"
+    }
   },
-  "files": ["dist", "src/styles.css"],
+  "files": ["dist"],
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@flow-view/inference": "workspace:*",
-    "@flow-view/narration": "workspace:*",
     "@flow-view/trace-schema": "workspace:*",
     "@flow-view/trace-store": "workspace:*"
   },
-  "peerDependencies": {
-    "react": "^18.3.1"
-  },
   "devDependencies": {
-    "@types/react": "^18.3.12",
-    "react": "^18.3.1",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
   }
 }

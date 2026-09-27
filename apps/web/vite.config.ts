@@ -23,6 +23,7 @@ export default defineConfig({
       "@flow-view/trace-store": pkg("trace-store"),
       "@flow-view/trace-fixtures": pkg("trace-fixtures"),
       "@flow-view/inference": pkg("inference"),
+      "@flow-view/narration": pkg("narration"),
     },
   },
   server: {

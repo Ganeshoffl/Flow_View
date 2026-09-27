@@ -16,9 +16,11 @@ import {
   CodePane,
   HeapPane,
   MetricsPane,
+  NarrationPane,
   OutputPane,
   PlaybackBar,
   StackPane,
+  TimelinePane,
   VariablesPane,
 } from "@flow-view/renderers";
 import { TraceStore } from "@flow-view/trace-store";
@@ -165,9 +167,15 @@ function LiveMode({ highlighted, onHighlight }: ModeProps) {
             onHighlightObject={onHighlight}
           />
         </div>
+        <div className="fv-area is-narration">
+          <NarrationPane store={live.store} language={"python"} />
+        </div>
         <div className="fv-area is-side">
           <OutputPane store={live.store} />
           <MetricsPane store={live.store} />
+        </div>
+        <div className="fv-area is-timeline">
+          <TimelinePane store={live.store} language={"python"} />
         </div>
       </main>
     </>
@@ -262,9 +270,15 @@ function ExampleMode({ highlighted, onHighlight }: ModeProps) {
             onHighlightObject={onHighlight}
           />
         </div>
+        <div className="fv-area is-narration">
+          <NarrationPane store={store} language={fixture.language} />
+        </div>
         <div className="fv-area is-side">
           <OutputPane store={store} />
           <MetricsPane store={store} />
+        </div>
+        <div className="fv-area is-timeline">
+          <TimelinePane store={store} language={fixture.language} />
         </div>
       </main>
     </>

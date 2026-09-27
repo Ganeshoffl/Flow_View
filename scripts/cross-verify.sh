@@ -94,6 +94,7 @@ if [ "$SKIP_BROWSER" -eq 0 ]; then
   run "fixtures step forward and back" bash scripts/verify-ui.sh cv-ui
   run "a live run traces end to end" bash scripts/verify-live.sh cv-live
   run "structures are recognised" bash scripts/verify-heap.sh cv-heap
+  run "a program explains itself" bash scripts/verify-narration.sh cv-narr
 else
   heading "7. in a real browser"
   echo "  skipped"

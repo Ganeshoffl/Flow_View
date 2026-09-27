@@ -102,16 +102,23 @@ layout, 8 performance and 235 cross-checks over all 33 real traces.
 
 The features that serve "anyone can understand it," all deterministic and offline.
 
-- [ ] 3.1 Narration template engine with per-language bundles and a shared fallback
-- [ ] 3.2 Templates for assignment, branch outcome, loop entry/exit, call, return, recursion depth, exception, allocation, mutation
-- [ ] 3.3 Control-flow presentation: executed-line shading, branch gutter, inline condition and result
-- [ ] 3.4 Timeline view: call tree over time, click to seek, folded loop bands
-- [ ] 3.5 Metrics view with counters and a step-indexed sparkline
-- [ ] 3.6 Step over / into / out at frame granularity; jump to next or previous change of a chosen variable or object
-- [ ] 3.7 Output view with stdout and stderr attributed to producing steps
+- [x] 3.1 Narration template engine with per-language bundles and a shared fallback
+- [x] 3.2 Templates for assignment, branch outcome, loop entry/exit, call, return, recursion depth, exception, allocation, mutation
+- [x] 3.3 Control-flow presentation: executed-line shading, branch gutter, inline condition and result
+- [x] 3.4 Timeline view: call tree over time, click to seek, folded loop bands
+- [x] 3.5 Metrics view with counters and a step-indexed sparkline
+- [x] 3.6 Step over / into / out at frame granularity; jump to next or previous change of a chosen variable or object
+- [x] 3.7 Output view with stdout and stderr attributed to producing steps
 
-**Gate:** a bubble sort narrates itself line by line in correct plain English, the metrics view shows a
-recognizably quadratic comparison curve, and the timeline correctly seeks to any call.
+**Gate passed.** `scripts/verify-narration.sh` runs a six-element bubble sort and checks the
+transcript, the metrics and the timeline. It reads, in part:
+
+> `values[j] > values[j + 1]` is true, so the body runs. · Positions 0 and 1 of `values` are swapped.
+> · The loop ran 3 times and ended because its condition stopped holding.
+
+The sparkline plots comparisons — 15 for six elements, which is 5+4+3+2+1 — clicking a timeline bar
+seeks to that call, and the jump controls move the playhead to a variable's previous change. 619
+TypeScript tests including 47 narration and 15 navigation.
 
 ---
 

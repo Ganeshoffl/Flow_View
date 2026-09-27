@@ -184,28 +184,40 @@ export class TraceStore {
   }
 
   /**
-   * Advance to the next step boundary.
+   * Advance to the next step.
    *
-   * Non-steppable events are bookkeeping — a `metric`, an `obj_set` — and are applied on the way
-   * past rather than being stops of their own. Stopping on them would make a single line of source
-   * take a dozen presses to get through.
+   * Defined in terms of `seekStep` so that there is exactly one answer to "where is the playhead when
+   * we are at step N". Stepping and seeking used to disagree: `next` stopped the instant it applied a
+   * steppable event, while `seekStep` went on to apply that step's trailing effects. The same step
+   * therefore had two different states depending on how it was reached, which showed up as narration
+   * describing an object the store did not yet have.
+   *
+   * The trailing events belong to the step. A tracer reports what a line did *after* announcing the
+   * next line, so those events are the effects of code that has already run.
    */
   next(): boolean {
-    if (!this.advanceOne()) return false;
-    while (!this.isSteppable(this.events[this.cursor - 1])) {
-      if (!this.advanceOne()) break;
+    const target = this.state.step + 1;
+    if (this.stepCount === 0 || target >= this.stepCount) {
+      // No further step, but there may still be a tail — `run_end` and its notes — worth applying.
+      if (!this.isAtEnd) {
+        this.fastForward();
+        return true;
+      }
+      return false;
     }
-    this.notify();
+    this.seekStep(target);
     return true;
   }
 
-  /** Retreat to the previous step boundary. */
+  /** Retreat to the previous step. */
   prev(): boolean {
-    if (!this.retreatOne()) return false;
-    while (this.cursor > 0 && !this.isSteppable(this.events[this.cursor - 1])) {
-      if (!this.retreatOne()) break;
+    const target = this.state.step - 1;
+    if (target < 0) {
+      if (this.cursor === 0) return false;
+      this.seekEvent(0);
+      return true;
     }
-    this.notify();
+    this.seekStep(target);
     return true;
   }
 
@@ -219,13 +231,18 @@ export class TraceStore {
     this.notify();
   }
 
-  /** Move to a step ordinal. */
+  /**
+   * Move to a step ordinal.
+   *
+   * Lands just past the event that opens the step, then applies its trailing bookkeeping — the
+   * mutations and metrics the tracer emits for code that has already run. This is the canonical
+   * position for a step, and `next` and `prev` are defined in terms of it so nothing can disagree.
+   */
   seekStep(step: number): void {
     if (this.stepStarts.length === 0) return;
     const clamped = Math.max(0, Math.min(step, this.stepStarts.length - 1));
     const start = this.stepStarts[clamped];
     if (start === undefined) return;
-    // Land just past the event that opens the step, then absorb its trailing bookkeeping.
     this.seekEvent(start + 1);
     while (this.cursor < this.events.length && !this.isSteppable(this.events[this.cursor])) {
       if (!this.advanceOne()) break;
