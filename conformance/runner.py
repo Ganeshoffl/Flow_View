@@ -564,16 +564,49 @@ def write_trace(case: Case, language: str, trace: Trace) -> Path:
     return path
 
 
+def clear_traces() -> None:
+    """Remove previously recorded traces before writing the current ones.
+
+    Stale traces are worse than missing ones. The directory is not version controlled, so switching
+    branches leaves behind files for cases that no longer exist — and the replay suite reads the
+    *directory*, so it will happily replay a trace produced by code that is no longer checked out. It
+    did: a case added on another branch went on being replayed here, and the suite reported fifteen
+    extra passing tests for a corpus entry this commit does not contain.
+    """
+    if not TRACE_OUT.exists():
+        return
+    for stale in TRACE_OUT.glob("*.json"):
+        stale.unlink()
+
+
+def write_manifest(written: list[str]) -> None:
+    """Record exactly which traces belong to this run, so the replay suite can insist on the set.
+
+    Clearing the directory stops stale files accumulating, but it cannot help a suite that runs
+    without the generator having run at all, or after only some cases were written. The manifest lets
+    the replay suite check the set it found is the set that was meant.
+    """
+    TRACE_OUT.mkdir(parents=True, exist_ok=True)
+    (TRACE_OUT / "manifest.json").write_text(
+        json.dumps({"traces": sorted(written)}, indent=2) + "\n", encoding="utf-8"
+    )
+
+
 def run_all(*, write: bool = True) -> list[Result]:
     results: list[Result] = []
+    written: list[str] = []
+    if write:
+        clear_traces()
     for case in load_cases():
         for language, adapter in ADAPTERS.items():
             if case.source_for(language) is None:
                 continue
             trace = adapter(case)
             if write:
-                write_trace(case, language, trace)
+                written.append(write_trace(case, language, trace).stem)
             results.append(verify(case, trace))
+    if write:
+        write_manifest(written)
     return results
 
 

@@ -13,7 +13,7 @@
  * skipping — a silently skipped verification is worse than none, because it looks like a pass.
  */
 
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -29,6 +29,8 @@ import {
   describeDifferences,
 } from "@flow-view/trace-store";
 
+import { MANIFEST, listTraceFiles } from "./traces.js";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const TRACE_DIR = join(here, "..", ".traces");
 
@@ -40,7 +42,7 @@ interface Recorded {
 function loadRecorded(): Recorded[] {
   let files: string[];
   try {
-    files = readdirSync(TRACE_DIR).filter((name) => name.endsWith(".json"));
+    files = listTraceFiles(TRACE_DIR);
   } catch {
     throw new Error(
       `No recorded traces in ${TRACE_DIR}.\n` +
@@ -49,14 +51,51 @@ function loadRecorded(): Recorded[] {
     );
   }
   if (files.length === 0) {
+    throw new Error(`${TRACE_DIR} is empty. Run: python conformance/runner.py`);
+  }
+
+  // Insist the set of traces is the set the generator meant to write.
+  //
+  // This directory is not version controlled, and the suite reads the *directory* — so a trace left
+  // behind by another branch goes on being replayed as though it belonged here. One did, and this
+  // suite reported fifteen extra passing tests for a corpus entry the checked-out code did not
+  // contain. Replaying output from code that is no longer present proves nothing about the code that
+  // is.
+  const expected = readManifest();
+  const found = files.map((name) => name.replace(/\.json$/, "")).sort();
+  const stale = found.filter((name) => !expected.includes(name));
+  const missing = expected.filter((name) => !found.includes(name));
+  if (stale.length > 0 || missing.length > 0) {
     throw new Error(
-      `${TRACE_DIR} is empty. Run: python conformance/runner.py`,
+      "The recorded traces do not match the corpus that produced them.\n" +
+        (stale.length > 0 ? `  left over from another run: ${stale.join(", ")}\n` : "") +
+        (missing.length > 0 ? `  recorded but now absent: ${missing.join(", ")}\n` : "") +
+        "Regenerate them:  python conformance/runner.py",
     );
   }
+
   return files.sort().map((name) => ({
     name: name.replace(/\.json$/, ""),
     trace: JSON.parse(readFileSync(join(TRACE_DIR, name), "utf8")) as Trace,
   }));
+}
+
+function readManifest(): string[] {
+  const path = join(TRACE_DIR, MANIFEST);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    throw new Error(
+      `${path} is missing, so there is no way to tell which traces belong to this commit.\n` +
+        "Regenerate them:  python conformance/runner.py",
+    );
+  }
+  const parsed = JSON.parse(raw) as { traces?: unknown };
+  if (!Array.isArray(parsed.traces)) {
+    throw new Error(`${path} has no trace list. Regenerate: python conformance/runner.py`);
+  }
+  return [...(parsed.traces as string[])].sort();
 }
 
 const recorded = loadRecorded();
