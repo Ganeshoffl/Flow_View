@@ -161,6 +161,7 @@ class Emitter:
         "_notes_sent",
         "_last_flush",
         "_idle_ms",
+        "_collapser",
     )
 
     #: How long a finished event may sit in the buffer before it is pushed out, in milliseconds.
@@ -184,6 +185,7 @@ class Emitter:
         limits: Limits | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         clock: Callable[[], float] | None = None,
+        collapser: Any = None,
     ) -> None:
         if stream is None and on_event is None:
             raise ValueError("an emitter needs either a stream or an on_event callback")
@@ -215,6 +217,11 @@ class Emitter:
         self._notes_sent: set[str] = set()
         self._last_flush = self._started
         self._idle_ms = 0.0
+        self._collapser = collapser
+        if collapser is not None and getattr(collapser, "_seq", None) is not None:
+            # The collapser stamps from_seq/to_seq onto the spans it folds, and only this knows the
+            # numbering.
+            collapser._seq = lambda: self.seq
 
     # -- timing ------------------------------------------------------------
 
@@ -244,7 +251,30 @@ class Emitter:
     # -- emission ----------------------------------------------------------
 
     def emit(self, kind: str, payload: dict[str, Any] | None = None) -> None:
-        """Write one event, assigning ``seq``, ``ms`` and — where applicable — ``step``."""
+        """Write one event, assigning ``seq``, ``ms`` and — where applicable — ``step``.
+
+        With a collapser attached, events pass through it first. It happens *before* numbering on
+        purpose: a folded event never receives a ``seq`` or a ``step``, so both stay dense and a
+        collapsed trace is numbered as though the folded iterations had never been separate steps —
+        which is the point of folding them.
+        """
+        if self._stopped:
+            return
+        if self._collapser is not None:
+            for out_kind, out_payload in self._collapser.feed(kind, payload):
+                self._emit_now(out_kind, out_payload)
+            return
+        self._emit_now(kind, payload)
+
+    def drain_collapser(self) -> None:
+        """Emit anything the collapser is still holding. Called once, as the run ends."""
+        if self._collapser is None:
+            return
+        collapser, self._collapser = self._collapser, None
+        for kind, payload in collapser.drain():
+            self._emit_now(kind, payload)
+
+    def _emit_now(self, kind: str, payload: dict[str, Any] | None = None) -> None:
         if self._stopped:
             return
         event: dict[str, Any] = {"seq": self.seq, "t": kind}

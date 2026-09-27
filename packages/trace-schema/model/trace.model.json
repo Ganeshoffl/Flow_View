@@ -549,6 +549,8 @@
         "from_seq": "int",
         "to_seq": "int",
         "iterations": "int",
+        "from_iter": { "t": "int", "opt": true, "doc": "Index of the first folded iteration. Together with to_iter this is what expand-on-demand re-runs; seq numbers do not survive into a re-run." },
+        "to_iter": { "t": "int", "opt": true, "doc": "Index of the last folded iteration." },
         "effects": { "t": "array:CollapseEffect" },
         "metrics": { "t": "map:int", "opt": true }
       }
