@@ -2206,6 +2206,14 @@
         "iterations": {
           "type": "integer"
         },
+        "from_iter": {
+          "type": "integer",
+          "description": "Index of the first folded iteration. Together with to_iter this is what expand-on-demand re-runs; seq numbers do not survive into a re-run."
+        },
+        "to_iter": {
+          "type": "integer",
+          "description": "Index of the last folded iteration."
+        },
         "effects": {
           "type": "array",
           "items": {

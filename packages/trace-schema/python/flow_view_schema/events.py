@@ -754,6 +754,8 @@ class CollapseEvent(_CollapseEvent, total=False):
     line: int
     path: str
     ms: float
+    from_iter: int
+    to_iter: int
     metrics: dict[str, int]
 
 class _NoteEvent(_EventBase):
@@ -1279,6 +1281,8 @@ EVENT_SPEC: dict[str, dict[str, dict[str, object]]] = {
         "from_seq": {"type": "int", "required": True},
         "to_seq": {"type": "int", "required": True},
         "iterations": {"type": "int", "required": True},
+        "from_iter": {"type": "int", "required": False},
+        "to_iter": {"type": "int", "required": False},
         "effects": {"type": "array:CollapseEffect", "required": True},
         "metrics": {"type": "map:int", "required": False},
     },

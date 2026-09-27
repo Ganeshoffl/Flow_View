@@ -88,6 +88,7 @@ class TracerOptions:
         "emit_metrics",
         "session_id",
         "backend",
+        "collapse",
     )
 
     def __init__(
@@ -100,6 +101,7 @@ class TracerOptions:
         emit_metrics: bool = True,
         session_id: str = "local",
         backend: str = "auto",
+        collapse: dict[str, int] | None = None,
     ) -> None:
         self.max_depth = max_depth
         self.max_objects = max_objects
@@ -111,6 +113,9 @@ class TracerOptions:
         # auto, settrace or monitoring. Forcing one is how the conformance suite proves the two
         # mechanisms produce the same trace.
         self.backend = backend
+        # Loop folding, off unless asked for. Keys: keep_head, keep_tail, chunk, min_iterations.
+        # A trace nobody asked to shorten is left exactly as the program ran.
+        self.collapse = collapse
 
 
 class _OpenLoop:
@@ -1004,6 +1009,11 @@ class Tracer:
             _builtins.input = original_input
             self._close_open_frames()
 
+        # Anything the collapser is still holding goes out before the run is declared over. A loop cut
+        # short by an exception or a budget never reaches its `loop_exit`, and its last few iterations
+        # are sitting in the tail window; without this they would simply vanish.
+        self.emitter.drain_collapser()
+
         self.emitter.emit(
             "run_end",
             {
@@ -1210,7 +1220,12 @@ def run_source(
     options: TracerOptions | None = None,
 ) -> str:
     """Trace a program given as text. Emits the session header, then the events."""
-    emitter = Emitter(stream, limits=limits, on_event=on_event)
+    collapser = None
+    if options is not None and options.collapse is not None:
+        from .collapse import LoopCollapser  # noqa: PLC0415 - optional path
+
+        collapser = LoopCollapser(**options.collapse)
+    emitter = Emitter(stream, limits=limits, on_event=on_event, collapser=collapser)
     tracer = Tracer(source, path, emitter, options)
     header = {"schema": "flow_view/trace@1", "session": tracer.session_header()}
     if on_event is not None:

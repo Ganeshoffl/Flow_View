@@ -718,6 +718,13 @@ export interface CollapseEvent extends EventBase {
   readonly from_seq: number;
   readonly to_seq: number;
   readonly iterations: number;
+  /**
+   * Index of the first folded iteration. Together with to_iter this is what expand-on-demand
+   * re-runs; seq numbers do not survive into a re-run.
+   */
+  readonly from_iter?: number;
+  /** Index of the last folded iteration. */
+  readonly to_iter?: number;
   readonly effects: CollapseEffect[];
   readonly metrics?: Record<string, number>;
 }
