@@ -617,8 +617,20 @@ class Tracer:
         code = frame.f_code
         count = code.co_argcount + getattr(code, "co_kwonlyargcount", 0)
         for arg_name in code.co_varnames[:count]:
-            if arg_name in frame.f_locals:
-                args.append({"name": arg_name, "value": self._encode(frame.f_locals[arg_name])})
+            if arg_name not in frame.f_locals:
+                continue
+            value = frame.f_locals[arg_name]
+            # An opaque call does not get to put new things in the heap.
+            #
+            # A library frame's arguments are announced so the reader can see what was passed, and the
+            # interesting ones are the user's own data — which, coming from somewhere the reader can
+            # already see, is a primitive or an object the heap already holds. An object nobody has
+            # heard of, arriving as an argument to a library function, is the library's own business:
+            # this is how a JSONEncoder and a codec's IncrementalDecoder ended up drawn as nodes in the
+            # heap view of a program whose only sin was calling `json.dumps` and `input`.
+            if kind == "library" and not is_atomic(value) and not self._registry.known(value):
+                continue
+            args.append({"name": arg_name, "value": self._encode(value)})
 
         caller = self._frame_stack[-2].frame_id if len(self._frame_stack) > 1 else None
         payload: dict[str, Any] = {
@@ -699,7 +711,17 @@ class Tracer:
         # Changes are normally noticed at the *following* line event, which the last line of a frame
         # never gets. Without this, `items.append(x)` as a program's final statement would leave no
         # trace of the append at all.
-        if not self._unwinding:
+        #
+        # Not for library frames. Their interior is not stepped, but this ran on the way out of them
+        # regardless, and harvested it wholesale: `json.dumps({"a": 1})` reported `markers`,
+        # `_encoder`, `floatstr` and `_iterencode` as variables and put a JSONEncoder in the heap with
+        # `skipkeys`, `ensure_ascii` and `check_circular` on it. Reading one line of input exposed the
+        # innards of a codec. None of it is the user's program, which is the entire point of calling a
+        # library call opaque.
+        #
+        # It was also indexing the wrong file: `self.analysis` describes the user's source, and
+        # `pending_line` here is a line number in someone else's.
+        if not self._unwinding and state.kind != "library":
             state.previous_line = state.pending_line
             fresh = self._diff_locals(frame, state)
             last = self.analysis.at(state.pending_line)
@@ -740,7 +762,13 @@ class Tracer:
             "line": frame.f_lineno,
         }
         if not self._unwinding:
-            payload["return_value"] = self._encode(value)
+            # Same rule as the arguments above: an opaque call does not get to put new things in the
+            # heap. `json.dumps` returns a string and is unaffected; its internal `iterencode` returned
+            # a tuple of half-built chunks, which was being drawn as a heap node. Where the returned
+            # object really is the user's — `sorted(...)` handing back a new list — it is announced a
+            # moment later by the assignment that binds it, which is where a reader looks for it.
+            if state.kind != "library" or is_atomic(value) or self._registry.known(value):
+                payload["return_value"] = self._encode(value)
         self.emitter.emit("frame_pop", payload)
 
     def handle_raise(self, frame: FrameType, exc_type: type, exc_value: BaseException) -> None:
