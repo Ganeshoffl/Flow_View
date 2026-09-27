@@ -126,14 +126,30 @@ TypeScript tests including 47 narration and 15 navigation.
 
 Make long programs survivable, while streaming.
 
-- [ ] 4.1 Streaming loop collapser: retain first and last *K* iterations, fold the middle
-- [ ] 4.2 Folded spans emitted as **single composite invertible events** carrying net before/after state,
+- [x] 4.1 Streaming loop collapser: retain first and last *K* iterations, fold the middle
+- [x] 4.2 Folded spans emitted as **single composite invertible events** carrying net before/after state,
       so collapsing cannot break the invertibility guarantee the TraceStore depends on
+
+Measured on a million-iteration accumulate loop: 730 events, 577 steps, 0.2 MB, 18 MB peak RSS, and
+the exact sum. Two constraints turned out to matter more than the folding itself:
+
+- **A fold may only swallow what it can represent.** `CollapseEffect` covers variable and heap writes,
+  so a span containing output, a blocking read, an exception, a new object or an unbalanced frame is
+  not folded at all. Compression that loses a `print` would make the trace a lie, and the step and
+  output budgets already bound those cases.
+- **Folding discards steps, not work.** Metric deltas are summed onto the collapse event, so a folded
+  trace still reports a million iterations. A metrics pane that got cheaper because the trace got
+  shorter would misrepresent the algorithm — which is the one thing the metrics pane exists to show.
+
+`collapse` gained `from_iter`/`to_iter` for 4.3: a re-run has its own seq numbers, so a span can only
+be re-requested by iteration range.
 - [ ] 4.3 Expand-on-demand by re-running a single region with folding disabled
 - [ ] 4.4 TraceStore retention policy: detail near the playhead, summaries far from it
 - [ ] 4.5 Delta-encoded snapshots with periodic full keyframes; interval adapted to heap size, tuned
       against trace bytes versus seek latency
 - [ ] 4.6 Adversarial corpus: million-iteration loops, deep recursion, wide heaps, huge strings
+      — the million-iteration loop is covered (conformance case 016 and a server-level check); deep
+      recursion, wide heaps and huge strings are not
 
 **Gate:** a one-million-iteration loop traces to completion, stays responsive, reports accurate final
 state, and never exhausts browser memory. Seek latency stays inside the 50 ms budget at 100k retained steps.
