@@ -29,6 +29,14 @@ PY_SUITE="packages/trace-schema/python/tests adapters/python/tests apps/server/t
 SURVIVORS=0
 CHECKED=0
 
+#: Seconds any single suite run may take before it is killed.
+#:
+#: This script's whole job is to put bugs back, and several of those bugs are deadlocks - a tracer that
+#: never flushes, a server that only batches on arrival. Reintroducing one hung pytest for twenty-five
+#: minutes before I gave up on it. A gate that can hang is a gate nobody will run, so every wait here is
+#: bounded and a run that has to be killed says so rather than looking like a pass.
+RUN_TIMEOUT=180
+
 # Backups live inside the repo so an interrupted run shows up in `git status` rather than leaving a
 # mutation behind unnoticed. /tmp does not survive between steps in this environment.
 BACKUP_DIR="$ROOT/.mutation-backups"
@@ -77,8 +85,13 @@ check() {
     return
   fi
   local out
-  out="$("$PYTHON" -m pytest "$@" --tb=no -rN 2>&1)"
-  if echo "$out" | grep -q "failed"; then
+  out="$(timeout "$RUN_TIMEOUT" "$PYTHON" -m pytest "$@" --tb=no -rN 2>&1)"
+  local status=$?
+  if [ "$status" -eq 124 ]; then
+    # The mutation was noticed, but by hanging. Worth distinguishing: a suite that has to be killed is a
+    # far worse failure mode than one that reports.
+    printf '  \033[33mcaught\033[0m   %-52s by hanging - killed after %ss\n' "$label" "$RUN_TIMEOUT"
+  elif echo "$out" | grep -q "failed"; then
     printf '  \033[32mcaught\033[0m   %-52s %s\n' "$label" \
       "$(echo "$out" | grep -oE '[0-9]+ failed' | head -1)"
   else
@@ -221,7 +234,7 @@ cp conformance/.traces/001-assignment.python.json conformance/.traces/999-from-e
 # by SIGPIPE, and pipefail reports *that* (141) as the pipeline's status. So `if cmd | grep -q x` is
 # false precisely when x was found. Both of these checks reported SURVIVED for that reason alone, which
 # is a script that lies about the scripts that lie.
-planted="$(pnpm exec vitest run conformance/test/replay.test.ts 2>&1)"
+planted="$(timeout "$RUN_TIMEOUT" pnpm exec vitest run conformance/test/replay.test.ts 2>&1)"
 if echo "$planted" | grep -q "left over from another run"; then
   printf '  \033[32mcaught\033[0m   %-52s\n' "a trace left behind by another branch"
 else
@@ -232,7 +245,7 @@ rm -f conformance/.traces/999-from-elsewhere.python.json
 
 CHECKED=$((CHECKED + 1))
 mv conformance/.traces/manifest.json conformance/.traces/manifest.hidden
-unmanifested="$(pnpm exec vitest run conformance/test/replay.test.ts 2>&1)"
+unmanifested="$(timeout "$RUN_TIMEOUT" pnpm exec vitest run conformance/test/replay.test.ts 2>&1)"
 if echo "$unmanifested" | grep -q "no way to tell which traces"; then
   printf '  \033[32mcaught\033[0m   %-52s\n' "recorded traces with no manifest"
 else
@@ -248,14 +261,14 @@ if [ "$QUICK" -eq 0 ]; then
   # timing about one in four.
   fails=0
   for _ in $(seq 1 15); do
-    "$PYTHON" -m pytest $PY_SUITE --tb=no -rN >/dev/null 2>&1 || fails=$((fails + 1))
+    timeout "$RUN_TIMEOUT" "$PYTHON" -m pytest $PY_SUITE --tb=no -rN >/dev/null 2>&1 || fails=$((fails + 1))
   done
   printf '  python suite:     %2d failures in 15 runs   (was ~1 in 2)\n' "$fails"
   [ "$fails" -gt 0 ] && SURVIVORS=$((SURVIVORS + 1))
 
   tfails=0
   for _ in $(seq 1 8); do
-    pnpm exec vitest run >/dev/null 2>&1 || tfails=$((tfails + 1))
+    timeout "$RUN_TIMEOUT" pnpm exec vitest run >/dev/null 2>&1 || tfails=$((tfails + 1))
   done
   printf '  typescript suite: %2d failures in 8 runs    (was ~1 in 4)\n' "$tfails"
   [ "$tfails" -gt 0 ] && SURVIVORS=$((SURVIVORS + 1))
