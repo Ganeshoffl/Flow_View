@@ -1,0 +1,17 @@
+{
+  "name": "exception-uncaught",
+  "description": "A program that dies. The trace keeps everything up to the failure.",
+  "concepts": [
+    "exceptions",
+    "truncation"
+  ],
+  "expect": {
+    "status": "error",
+    "exceptions": {
+      "raised": 1,
+      "uncaught": "IndexError"
+    },
+    "min_objects": 1,
+    "frames_balanced": true
+  }
+}

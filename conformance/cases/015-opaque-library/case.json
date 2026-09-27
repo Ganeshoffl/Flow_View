@@ -1,0 +1,13 @@
+{
+  "name": "opaque-library",
+  "description": "A call into pure-Python library code is one step, not a tour of its internals.",
+  "concepts": [
+    "library boundary"
+  ],
+  "expect": {
+    "status": "ok",
+    "stdout": "{\"a\": 1}\n",
+    "has_library_frame": true,
+    "no_steps_inside_library": true
+  }
+}

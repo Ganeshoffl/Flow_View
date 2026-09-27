@@ -1,0 +1,20 @@
+{
+  "name": "aliasing",
+  "description": "Two names for one object. The mutation happens once and is visible through both.",
+  "concepts": [
+    "references",
+    "aliasing",
+    "mutation"
+  ],
+  "expect": {
+    "status": "ok",
+    "stdout": "4\n",
+    "aliases": [
+      [
+        "first",
+        "second"
+      ]
+    ],
+    "mutation_count": 1
+  }
+}

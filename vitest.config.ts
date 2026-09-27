@@ -17,7 +17,13 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["packages/**/test/**/*.test.ts", "apps/**/test/**/*.test.ts"],
+    include: [
+      "packages/**/test/**/*.test.ts",
+      "apps/**/test/**/*.test.ts",
+      // Replays real adapter output. Needs `python conformance/runner.py` to have run first, and
+      // fails loudly rather than skipping if it has not.
+      "conformance/test/**/*.test.ts",
+    ],
     environment: "node",
   },
 });

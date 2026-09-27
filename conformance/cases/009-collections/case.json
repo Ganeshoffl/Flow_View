@@ -1,0 +1,14 @@
+{
+  "name": "collections",
+  "description": "A list, a dict and a nested list, each read and mutated.",
+  "concepts": [
+    "arrays",
+    "maps",
+    "mutation"
+  ],
+  "expect": {
+    "status": "ok",
+    "stdout": "30 1 9\n",
+    "min_objects": 5
+  }
+}

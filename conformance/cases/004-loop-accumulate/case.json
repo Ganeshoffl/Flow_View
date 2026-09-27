@@ -1,0 +1,24 @@
+{
+  "name": "loop-accumulate",
+  "description": "A counted loop with an accumulator.",
+  "concepts": [
+    "loops",
+    "metrics"
+  ],
+  "expect": {
+    "status": "ok",
+    "stdout": "10\n",
+    "final_variables": {
+      "total": 10
+    },
+    "loops": [
+      {
+        "iterations": 5,
+        "reason": "condition"
+      }
+    ],
+    "metrics_at_least": {
+      "iteration": 5
+    }
+  }
+}

@@ -15,8 +15,9 @@
     "typecheck": "tsc -b packages/trace-fixtures --dry || tsc -b packages/trace-fixtures",
     "test": "vitest run",
     "dev": "pnpm --filter @flow-view/web dev",
-    "test:py": "PYTHONPATH=packages/trace-schema/python python3 -m pytest packages/trace-schema/python/tests -q",
-    "verify": "pnpm schema:check && pnpm typecheck && pnpm test && pnpm --filter @flow-view/web build",
+    "test:py": "PYTHONPATH=packages/trace-schema/python:adapters/python python3 -m pytest packages/trace-schema/python/tests adapters/python/tests apps/server/tests conformance/tests -q",
+    "conformance": "python3 conformance/runner.py && python3 conformance/backends.py",
+    "verify": "pnpm schema:check && pnpm typecheck && pnpm test:py && pnpm conformance && pnpm test && pnpm --filter @flow-view/web build",
     "verify:ui": "bash scripts/verify-ui.sh"
   },
   "devDependencies": {

@@ -1,0 +1,14 @@
+{
+  "name": "linked-structure",
+  "description": "Objects referring to objects of their own type.",
+  "concepts": [
+    "linked list",
+    "references"
+  ],
+  "expect": {
+    "status": "ok",
+    "stdout": "3\n",
+    "min_objects": 3,
+    "has_self_type_reference": true
+  }
+}

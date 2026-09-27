@@ -1,0 +1,27 @@
+{
+  "name": "branching",
+  "description": "An if/elif/else chain. The condition text is recorded; its value is not.",
+  "concepts": [
+    "control flow",
+    "branches"
+  ],
+  "expect": {
+    "status": "ok",
+    "stdout": "B\n",
+    "final_variables": {
+      "grade": "B"
+    },
+    "branches": [
+      {
+        "expr": "score >= 90",
+        "outcome": "not_taken",
+        "kind": "if"
+      },
+      {
+        "expr": "score >= 70",
+        "outcome": "taken",
+        "kind": "elif"
+      }
+    ]
+  }
+}

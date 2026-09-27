@@ -1,0 +1,27 @@
+{
+  "name": "assignment",
+  "description": "Binding names to primitives, and one line of output.",
+  "concepts": [
+    "variables",
+    "output"
+  ],
+  "expect": {
+    "status": "ok",
+    "stdout": "3\n",
+    "final_variables": {
+      "x": 1,
+      "y": 3
+    },
+    "min_steps": 3,
+    "events_present": [
+      "run_start",
+      "step_line",
+      "var_set",
+      "stdout",
+      "run_end"
+    ],
+    "metrics_at_least": {
+      "assignment": 2
+    }
+  }
+}

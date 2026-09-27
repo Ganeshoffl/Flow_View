@@ -43,7 +43,7 @@ const assignment: Fixture = {
     b.push("<module>", [], { line: 1 });
     b.line(1).setPrim("x", 1);
     b.line(2).setPrim("y", 3);
-    b.line(3).libraryCall("print", [prim(3)], prim(null));
+    b.line(3);
     b.out("3\n");
     return b.build();
   },
@@ -66,7 +66,7 @@ const rebinding: Fixture = {
     b.line(2).setPrim("n", 5);
     b.line(3).setPrim("n", 15);
     b.line(4).setPrim("n", 14);
-    b.line(5).libraryCall("print", [prim(14)], prim(null));
+    b.line(5);
     b.out("14\n");
     return b.build();
   },
@@ -100,7 +100,7 @@ const branching: Fixture = {
     b.line(4).branch("elif", "score >= 70", "taken", { line: 4, targetLine: 5 });
     b.metric("comparison", 1);
     b.line(5).setPrim("grade", "B");
-    b.line(8).libraryCall("print", [prim("B")], prim(null));
+    b.line(8);
     b.out("B\n");
     return b.build();
   },
@@ -129,7 +129,7 @@ const loopSum: Fixture = {
     }
     b.line(2).branch("for", "i in range(5)", "not_taken", { line: 2, targetLine: 4 });
     b.loopExit(region, 5);
-    b.line(4).libraryCall("print", [prim(total)], prim(null));
+    b.line(4);
     b.out(`${total}\n`);
     return b.build();
   },
@@ -179,7 +179,7 @@ const loopBreak: Fixture = {
         break;
       }
     }
-    b.line(7).libraryCall("print", [prim(15)], prim(null));
+    b.line(7);
     b.out("15\n");
     return b.build();
   },
@@ -210,7 +210,7 @@ const functionCall: Fixture = {
     b.line(3);
     b.pop(prim(7));
     b.set("total", prim(7));
-    b.line(6).libraryCall("print", [prim(7)], prim(null));
+    b.line(6);
     b.out("7\n");
     return b.build();
   },
@@ -260,7 +260,6 @@ const recursion: Fixture = {
     };
 
     const result = descend(4);
-    b.libraryCall("print", [prim(result)], prim(null));
     b.out(`${result}\n`);
     return b.build();
   },
@@ -290,13 +289,10 @@ const aliasing: Fixture = {
     b.hint(list, "array", "high", ["three integer elements in positional order"], true);
     b.set("first", ref(list));
     b.line(2).set("second", ref(list));
-    b.line(3);
-    b.push("append", [{ name: "arg0", value: prim(4) }], { kind: "library", line: 3 });
-    b.objAppend(list, prim(4));
-    b.pop(prim(null));
-    b.line(4).libraryCall("print", [ref(list)], prim(null));
+    b.line(3).objAppend(list, prim(4));
+    b.line(4);
     b.out("[1, 2, 3, 4]\n");
-    b.line(5).libraryCall("print", [prim(true)], prim(null));
+    b.line(5);
     b.out("True\n");
     return b.build();
   },
@@ -531,7 +527,7 @@ const exceptionCaught: Fixture = {
     b.pop(undefined, "exception");
     b.catchAt(6);
     b.line(7).setPrim("result", null);
-    b.line(8).libraryCall("print", [prim(null)], prim(null));
+    b.line(8);
     b.out("None\n");
     return b.build();
   },
@@ -587,9 +583,8 @@ const interactiveInput: Fixture = {
     b.line(1).input("Name: ", "Ada");
     b.set("name", prim("Ada"));
     b.line(2).input("Age: ", "36");
-    b.libraryCall("int", [prim("36")], prim(36));
     b.set("age", prim(36));
-    b.line(3).libraryCall("print", [prim("Ada is 36")], prim(null));
+    b.line(3);
     b.out("Ada is 36\n");
     return b.build();
   },
@@ -653,7 +648,7 @@ const collapsedLoop: Fixture = {
 
     b.line(2).branch("for", "i in range(1000)", "not_taken", { line: 2, targetLine: 4 });
     b.loopExit(region, 1000);
-    b.line(4).libraryCall("print", [prim(total)], prim(null));
+    b.line(4);
     b.out(`${total}\n`);
     b.note("info", "994 of 1000 iterations were collapsed. Expand the region to see them.");
     return b.build();
@@ -683,6 +678,42 @@ const truncatedRun: Fixture = {
     b.note("warn", "Step budget of 200000 steps reached. Execution stopped here.");
     b.pop(undefined, "implicit");
     b.runEnd("step_limit", 0);
+    return b.build();
+  },
+};
+
+const opaqueLibrary: Fixture = {
+  id: "opaque-library",
+  title: "Opaque library call",
+  summary:
+    "A call into library code is one step showing what went in and what came out, never a tour of " +
+    "its internals.",
+  language: "python",
+  concepts: ["library boundary", "functions"],
+  source: ["import json", "", "data = {'a': 1}", "encoded = json.dumps(data)", "print(encoded)"],
+  build: () => {
+    const b = new TraceBuilder({ id: "opaque-library", source: opaqueLibrary.source });
+    b.runStart();
+    b.push("<module>", [], { line: 1 });
+    b.line(1);
+    b.line(3);
+    const data = b.newObj("map", "dict", { length: 1 });
+    b.objSet(data, "a", prim(1));
+    b.hint(data, "map", "high", ["one string key holding an integer"], true);
+    b.set("data", ref(data));
+
+    // json.dumps is written in Python, so a real trace does have a frame for it — and nothing
+    // between the push and the pop, because its interior is deliberately not traced. Stepping
+    // through several thousand lines of the json module would bury the user's own five.
+    b.line(4);
+    b.push("dumps", [{ name: "obj", value: ref(data) }], { kind: "library", line: 4 });
+    b.pop(prim('{"a": 1}'));
+    b.set("encoded", prim('{"a": 1}'));
+
+    // print is a C builtin. CPython creates no Python frame for it, so no call appears at all — the
+    // line itself is the step, and the output is attributed to it.
+    b.line(5);
+    b.out('{"a": 1}\n');
     return b.build();
   },
 };
@@ -750,6 +781,7 @@ export const FIXTURES: readonly Fixture[] = [
   interactiveInput,
   collapsedLoop,
   truncatedRun,
+  opaqueLibrary,
   nativePointers,
 ];
 

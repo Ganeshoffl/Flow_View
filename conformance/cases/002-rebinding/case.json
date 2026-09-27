@@ -1,0 +1,23 @@
+{
+  "name": "rebinding",
+  "description": "A name taking several values in turn. Every change must record what it overwrote.",
+  "concepts": [
+    "variables",
+    "invertibility"
+  ],
+  "expect": {
+    "status": "ok",
+    "final_variables": {
+      "n": 14
+    },
+    "variable_history": {
+      "n": [
+        0,
+        5,
+        15,
+        14
+      ]
+    },
+    "every_rebinding_has_prev": true
+  }
+}

@@ -54,7 +54,14 @@ which makes it the fastest way to discover whether the schema survives contact w
 - [ ] 1.5 Metric events: comparisons, swaps, assignments, calls, iterations
 - [ ] 1.6 Step budget, output cap, and truncation reported as a `note` plus a `run_end` status
 - [ ] 1.7 Exception capture including uncaught, with the trace preserved
-- [ ] 1.8 `sys.monitoring` fast path on 3.12+, `settrace` fallback below it, identical output from both
+- [x] 1.8 **Tracing backends.** *Done, and the premise was wrong.* Both mechanisms are implemented
+      behind one set of handlers, but `sys.monitoring` cannot produce identical output: `LINE` fires on
+      a line *transition*, so it reports a comprehension or a one-line `for` as a single step where
+      `settrace` shows every iteration. It is also only 1.07–1.16× faster. Hiding loop iterations to
+      save a tenth of the time is a bad trade for this tool, and choosing per Python version would
+      make traces version-dependent. **`settrace` is the default everywhere**; monitoring is explicit
+      opt-in. An apparent 5× speedup turned out to be `DISABLE` permanently suppressing repeat library
+      calls — 480 dropped steps. See `docs/decisions/0002-tracing-backend.md`.
 - [ ] 1.9 Runner: subprocess with rlimits, temp cwd, scrubbed env, process-group reaping
 - [ ] 1.10 FastAPI server: session create, WebSocket streaming, `/api/capabilities`
 - [ ] 1.11 Event batching on a ~16 ms tick

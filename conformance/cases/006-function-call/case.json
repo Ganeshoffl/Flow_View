@@ -1,0 +1,25 @@
+{
+  "name": "function-call",
+  "description": "Arguments in, a value out, and a frame retained after it returns.",
+  "concepts": [
+    "functions",
+    "frames"
+  ],
+  "expect": {
+    "status": "ok",
+    "stdout": "7\n",
+    "final_variables": {
+      "total": 7
+    },
+    "calls": [
+      {
+        "func": "add",
+        "args": [
+          3,
+          4
+        ],
+        "returns": 7
+      }
+    ]
+  }
+}

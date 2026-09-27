@@ -1,0 +1,24 @@
+{
+  "name": "recursion",
+  "description": "Each depth gets its own frame, and the values chain back out.",
+  "concepts": [
+    "recursion",
+    "frames",
+    "call stack"
+  ],
+  "expect": {
+    "status": "ok",
+    "stdout": "24\n",
+    "recursion": {
+      "func": "fact",
+      "depths": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "outer_returns": 24
+    },
+    "frames_balanced": true
+  }
+}

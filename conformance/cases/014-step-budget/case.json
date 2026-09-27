@@ -1,0 +1,18 @@
+{
+  "name": "step-budget",
+  "description": "An endless loop. Stopping it is a result, not a crash.",
+  "concepts": [
+    "limits",
+    "truncation",
+    "honesty"
+  ],
+  "expect": {
+    "status": "step_limit",
+    "limits": {
+      "max_steps": 400
+    },
+    "frames_balanced": true,
+    "has_warning_note": true,
+    "no_exception_reported": true
+  }
+}

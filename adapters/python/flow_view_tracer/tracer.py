@@ -35,6 +35,7 @@ from types import FrameType
 from typing import Any, Callable
 
 from .analysis import LineInfo, SourceAnalysis, analyze
+from .backends import choose_backend
 from .emit import BudgetExceeded, Emitter, Limits, encode_primitive, encode_value
 from .walk import (
     DEFAULT_MAX_DEPTH,
@@ -59,6 +60,12 @@ _INTERNAL_MODULES = (
     "flow_view_tracer.emit",
     "flow_view_tracer.walk",
     "flow_view_tracer.analysis",
+    # backends must be here: uninstall() necessarily runs while tracing is still active, so without
+    # it the tracer records its own teardown — a frame for `uninstall` and a heap object for the
+    # backend appeared at the end of every trace.
+    "flow_view_tracer.backends",
+    "flow_view_tracer.guards",
+    "flow_view_tracer.cli",
 )
 
 
@@ -72,6 +79,7 @@ class TracerOptions:
         "complete_heap",
         "emit_metrics",
         "session_id",
+        "backend",
     )
 
     def __init__(
@@ -83,6 +91,7 @@ class TracerOptions:
         complete_heap: bool = False,
         emit_metrics: bool = True,
         session_id: str = "local",
+        backend: str = "auto",
     ) -> None:
         self.max_depth = max_depth
         self.max_objects = max_objects
@@ -91,6 +100,9 @@ class TracerOptions:
         self.complete_heap = complete_heap
         self.emit_metrics = emit_metrics
         self.session_id = session_id
+        # auto, settrace or monitoring. Forcing one is how the conformance suite proves the two
+        # mechanisms produce the same trace.
+        self.backend = backend
 
 
 class _OpenLoop:
@@ -120,10 +132,13 @@ class _FrameState:
         "depth",
         "loops",
         "pending_jump",
+        "kind",
     )
 
-    def __init__(self, frame_id: int, depth: int) -> None:
+    def __init__(self, frame_id: int, depth: int, kind: str = "user") -> None:
         self.frame_id = frame_id
+        #: Schema FrameKind. Library frames are announced but their interiors are never stepped.
+        self.kind = kind
         self.locals_snapshot: dict[str, Any] = {}
         #: A branch whose outcome is not yet known, waiting on the next line event.
         self.pending_branch: tuple[LineInfo, int] | None = None
@@ -209,6 +224,7 @@ class Tracer:
         self.options = options or TracerOptions()
         self.analysis: SourceAnalysis = analyze(self.path, source)
 
+        self._root_code: Any = None
         self._registry = Registry(on_new=self._announce)
         self._immutable_cache: dict[int, Slots] = {}
         self._heap: Slots = {}
@@ -509,38 +525,81 @@ class Tracer:
 
     # -- trace callbacks ---------------------------------------------------
 
+    @property
+    def known_frames(self) -> dict[int, _FrameState]:
+        """Frames the tracer accepted, keyed by frame identity."""
+        return self._frames
+
+    def wants_lines(self, frame: FrameType) -> bool:
+        """Whether line events inside this frame are of any interest.
+
+        They are not, for library code. ``settrace`` is told via ``f_trace_lines = False``, which
+        monitoring ignores entirely — so monitoring was stepping through the json module while
+        settrace was not. A backend asks here instead of assuming.
+        """
+        state = self._frames.get(id(frame))
+        return state is not None and state.kind != "library"
+
+    def in_scope(self, frame: FrameType) -> bool:
+        """Whether a newly entered frame belongs to the program being traced.
+
+        ``settrace`` is installed at a point in the stack and therefore only ever sees frames below
+        it. ``sys.monitoring`` is global: without this, it reports every function in the process —
+        the caller that started the run, the test harness, the innards of every imported module.
+        Roughly two thousand events instead of nineteen.
+
+        A frame is in scope when it *is* the program's module frame, or when its caller already is.
+        """
+        if frame.f_code is self._root_code:
+            return True
+        caller = frame.f_back
+        return caller is not None and id(caller) in self._frames
+
+    def ignores(self, frame: FrameType) -> bool:
+        """Whether this frame must not be traced at all.
+
+        Covers the tracer's own modules and anything reached while muted. Both backends consult it,
+        so neither can let flow_view appear in its own output.
+        """
+        return (
+            self._muted
+            or self.emitter.stopped
+            or frame.f_code.co_filename in self._internal_files
+        )
+
+    # -- settrace adapter --------------------------------------------------
+
     def _trace(self, frame: FrameType, event: str, arg: Any) -> Callable[..., Any] | None:
-        if self._muted or self.emitter.stopped:
-            return None
-        if frame.f_code.co_filename in self._internal_files:
-            # Defence in depth alongside the mute flag: never trace flow_view's own frames.
+        """The ``sys.settrace`` protocol, delegating to the shared handlers."""
+        if self.ignores(frame):
             return None
         try:
             if event == "call":
-                return self._on_call(frame)
-            if event == "line":
-                return self._on_line(frame)
-            if event == "return":
-                return self._on_return(frame, arg)
-            if event == "exception":
-                return self._on_exception(frame, arg)
+                self.handle_call(frame)
+            elif event == "line":
+                self.handle_line(frame)
+            elif event == "return":
+                self.handle_return(frame, arg)
+            elif event == "exception":
+                self.handle_raise(frame, arg[0], arg[1])
         except BudgetExceeded:
             raise
         return self._trace
 
-    def _on_call(self, frame: FrameType) -> Callable[..., Any] | None:
+    def handle_call(self, frame: FrameType) -> bool:
+        """A frame was entered. Returns whether its interior should be traced."""
         user = self._is_user_file(frame.f_code.co_filename)
         name = frame.f_code.co_name
 
         if not user:
             # An opaque library call: announced with its arguments, its interior suppressed. No
             # per-line cost is paid inside it, which is the point.
-            frame_id = self._push(frame, name, kind="library")
+            self._push(frame, name, kind="library")
             frame.f_trace_lines = False
-            return self._trace
+            return False
 
         self._push(frame, name, kind="user")
-        return self._trace
+        return True
 
     def _push(self, frame: FrameType, name: str, *, kind: str) -> int:
         frame_id = self._next_frame_id
@@ -548,7 +607,7 @@ class Tracer:
         depth = self._recursion.get(name, 0)
         self._recursion[name] = depth + 1
 
-        state = _FrameState(frame_id, depth)
+        state = _FrameState(frame_id, depth, kind)
         # At a module's call event f_lineno is 0, which is not a line anyone can point at.
         state.pending_line = frame.f_lineno or 1
         self._frames[id(frame)] = state
@@ -580,10 +639,11 @@ class Tracer:
         state.locals_snapshot = dict(frame.f_locals)
         return frame_id
 
-    def _on_line(self, frame: FrameType) -> Callable[..., Any] | None:
+    def handle_line(self, frame: FrameType) -> None:
+        """A line is about to execute."""
         state = self._frames.get(id(frame))
         if state is None:
-            return self._trace
+            return
 
         line = frame.f_lineno
         self.emitter.check_budget()
@@ -628,12 +688,11 @@ class Tracer:
             # Decided on the next line event, by observing where control went.
             state.pending_branch = (info, line)
 
-        return self._trace
-
-    def _on_return(self, frame: FrameType, value: Any) -> Callable[..., Any] | None:
+    def handle_return(self, frame: FrameType, value: Any) -> None:
+        """A frame is exiting, by return or by an exception passing through it."""
         state = self._frames.pop(id(frame), None)
         if state is None:
-            return self._trace
+            return
 
         # Observe what the frame's last line did.
         #
@@ -683,14 +742,13 @@ class Tracer:
         if not self._unwinding:
             payload["return_value"] = self._encode(value)
         self.emitter.emit("frame_pop", payload)
-        return self._trace
 
-    def _on_exception(self, frame: FrameType, arg: Any) -> Callable[..., Any] | None:
-        exc_type, exc_value, _ = arg
-        if issubclass(exc_type, BudgetExceeded):
+    def handle_raise(self, frame: FrameType, exc_type: type, exc_value: BaseException) -> None:
+        """An exception appeared in this frame, whether raised here or passing through."""
+        if isinstance(exc_type, type) and issubclass(exc_type, BudgetExceeded):
             # The tracer's own stop signal. Reporting it would show the user an error their program
             # never raised.
-            return self._trace
+            return
 
         self._unwinding = True
 
@@ -699,7 +757,7 @@ class Tracer:
         # a new raise would claim the program failed five times instead of once.
         identity = id(exc_value)
         if self._active_exception == identity:
-            return self._trace
+            return
         self._active_exception = identity
 
         state = self._frames.get(id(frame))
@@ -712,7 +770,6 @@ class Tracer:
         if state is not None:
             payload["frame"] = state.frame_id
         self.emitter.emit("exception_raise", payload)
-        return self._trace
 
     def _note_handled(self, state: _FrameState, line: int) -> None:
         """Record that a propagating exception was caught here.
@@ -793,12 +850,22 @@ class Tracer:
         original_input = _builtins.input
         _builtins.input = _InputBridge(self, sys.stdin)  # type: ignore[assignment]
 
+        # The code object the program itself runs as. Monitoring is global rather than per-frame, so
+        # this is how a backend recognises the root of what it should be watching; settrace gets that
+        # scoping for free from where it was installed.
+        self._root_code = code
+
+        backend = choose_backend(self.options.backend)
         try:
-            sys.settrace(self._trace)
+            backend.install(self)
             try:
                 exec(code, module_globals)
             finally:
-                sys.settrace(None)
+                # Teardown runs while tracing is still live, so it is muted as well as excluded by
+                # filename. Belt and braces, because this leaked once already.
+                self._muted = True
+                backend.uninstall()
+                self._muted = False
         except BudgetExceeded as stop:
             status = stop.reason
             exit_code = 0

@@ -126,14 +126,49 @@ describe("assignment", () => {
     expect(store.state.output.map((o) => o.text).join("")).toBe("3\n");
   });
 
-  it("marks the library call opaque rather than stepping into it", () => {
+  it("records no frame for a C builtin", () => {
+    // `print` is implemented in C, so CPython creates no Python frame and a real trace shows none.
+    // This fixture originally invented one, which Phase 1 caught by running the real adapter — the
+    // exact risk of building the UI against hand-written traces first.
     const trace = getFixture("assignment").build();
-    const pushes = trace.events.filter((e) => e.t === "frame_push");
-    const library = pushes.filter((e) => e.t === "frame_push" && e.kind === "library");
+    const library = trace.events.filter((e) => e.t === "frame_push" && e.kind === "library");
+    expect(library).toHaveLength(0);
+  });
+
+  it("still attributes the printed output to the line that printed it", () => {
+    const store = load("assignment");
+    store.fastForward();
+    expect(store.state.output.map((chunk) => chunk.text).join("")).toBe("3\n");
+  });
+});
+
+describe("opaque-library", () => {
+  it("shows a pure-Python library call as a single opaque frame", () => {
+    const trace = getFixture("opaque-library").build();
+    const library = trace.events.filter((e) => e.t === "frame_push" && e.kind === "library");
     expect(library).toHaveLength(1);
-    // Nothing between the opaque push and its pop: the interior is deliberately invisible.
+
+    // Nothing between the push and the pop: the interior is deliberately invisible, which is what
+    // keeps the user's five lines from being buried under the json module's thousands.
     const pushIndex = trace.events.findIndex((e) => e.t === "frame_push" && e.kind === "library");
     expect(trace.events[pushIndex + 1]?.t).toBe("frame_pop");
+  });
+
+  it("reports what went in and what came out", () => {
+    const trace = getFixture("opaque-library").build();
+    const push = trace.events.find((e) => e.t === "frame_push" && e.kind === "library");
+    const pop = trace.events.find((e) => e.t === "frame_pop");
+    expect(push?.t === "frame_push" && push.args).toHaveLength(1);
+    expect(pop?.t === "frame_pop" && pop.return_value).toEqual(prim('{"a": 1}'));
+  });
+
+  it("leaves the argument object inspectable", () => {
+    const store = load("opaque-library");
+    store.fastForward();
+    const data = store.lookup("data");
+    expect(data && isRef(data)).toBe(true);
+    const target = store.state.objects.get(isRef(data!) ? data.ref : -1);
+    expect(target?.slots.get("a")).toEqual(prim(1));
   });
 });
 

@@ -1,0 +1,25 @@
+{
+  "name": "loop-break",
+  "description": "A search that stops early. The loop must say it ended by break, not by its condition.",
+  "concepts": [
+    "loops",
+    "break",
+    "control flow"
+  ],
+  "expect": {
+    "status": "ok",
+    "stdout": "15\n",
+    "final_variables": {
+      "found": 15
+    },
+    "loops": [
+      {
+        "iterations": 3,
+        "reason": "break"
+      }
+    ],
+    "events_present": [
+      "jump"
+    ]
+  }
+}

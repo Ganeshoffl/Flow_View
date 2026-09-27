@@ -1,0 +1,27 @@
+{
+  "name": "exception-caught",
+  "description": "A raise met by a handler, and a clean return afterwards.",
+  "concepts": [
+    "exceptions",
+    "control flow"
+  ],
+  "expect": {
+    "status": "ok",
+    "stdout": "None 42\n",
+    "final_variables": {
+      "result": null,
+      "check": 42
+    },
+    "exceptions": {
+      "raised": 1,
+      "caught": 1
+    },
+    "calls": [
+      {
+        "func": "later",
+        "args": [],
+        "returns": 42
+      }
+    ]
+  }
+}

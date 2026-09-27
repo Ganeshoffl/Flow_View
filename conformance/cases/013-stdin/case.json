@@ -1,0 +1,27 @@
+{
+  "name": "stdin",
+  "description": "Input read from outside. Both the question and the answer must be recorded.",
+  "concepts": [
+    "stdin",
+    "determinism"
+  ],
+  "expect": {
+    "status": "ok",
+    "stdin": "Ada\n36\n",
+    "stdout": "Ada 36\n",
+    "final_variables": {
+      "name": "Ada",
+      "age": 36
+    },
+    "stdin_exchanges": [
+      {
+        "prompt": "Name: ",
+        "answer": "Ada"
+      },
+      {
+        "prompt": "Age: ",
+        "answer": "36"
+      }
+    ]
+  }
+}
