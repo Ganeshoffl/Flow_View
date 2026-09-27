@@ -115,11 +115,55 @@ select {
   flex: 1;
 }
 
+/*
+ * Two rows, with the heap spanning most of the lower one.
+ *
+ * The heap was originally given the narrowest column, which is backwards: it is by far the most
+ * spatially demanding view, and a four-node tree arrived with a horizontal scrollbar and one node
+ * visible. Code and the heap are the two panes that need room; the rest are lists and read fine narrow.
+ */
 .fv-main {
   display: grid;
-  grid-template-columns: minmax(340px, 1.35fr) minmax(280px, 1fr) minmax(260px, 0.9fr);
+  grid-template-columns: minmax(320px, 1.25fr) minmax(220px, 0.85fr) minmax(220px, 0.9fr);
+  grid-template-rows: minmax(190px, 1.05fr) minmax(200px, 1fr);
+  grid-template-areas:
+    "code  stack vars"
+    "heap  heap  side";
   gap: 10px;
   min-height: 0;
+}
+
+.fv-area {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  min-width: 0;
+}
+
+.fv-area > * {
+  flex: 1;
+  min-height: 0;
+}
+
+.fv-area.is-code {
+  grid-area: code;
+}
+
+.fv-area.is-stack {
+  grid-area: stack;
+}
+
+.fv-area.is-vars {
+  grid-area: vars;
+}
+
+.fv-area.is-heap {
+  grid-area: heap;
+}
+
+.fv-area.is-side {
+  grid-area: side;
 }
 
 .fv-column {
@@ -604,16 +648,29 @@ select {
 /* Desktop-first, as specified. Narrow screens get a single readable column. */
 @media (max-width: 1200px) {
   .fv-main {
-    grid-template-columns: minmax(340px, 1.2fr) minmax(280px, 1fr);
+    grid-template-columns: minmax(300px, 1.2fr) minmax(240px, 1fr);
+    grid-template-rows: minmax(190px, 1fr) minmax(180px, 0.8fr) minmax(180px, 0.8fr);
+    grid-template-areas:
+      "code  stack"
+      "heap  vars"
+      "heap  side";
   }
 }
 
 @media (max-width: 860px) {
   .fv-main {
     grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    grid-template-areas:
+      "code"
+      "stack"
+      "vars"
+      "heap"
+      "side";
   }
 
-  .fv-main > .fv-code {
+  .fv-area.is-code,
+  .fv-area.is-heap {
     min-height: 40vh;
   }
 
@@ -799,4 +856,158 @@ select {
 .fv-editor-area:focus-visible {
   outline: none;
   box-shadow: inset 2px 0 0 var(--fv-accent);
+}
+
+
+/* ------------------------------------------------------------------ heap */
+
+.fv-heap {
+  min-height: 220px;
+}
+
+.fv-heap-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+}
+
+.fv-mini {
+  font-size: 10px;
+  padding: 1px 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.fv-mini.is-on {
+  background: var(--fv-accent-dim);
+  border-color: var(--fv-accent);
+  color: var(--fv-text);
+}
+
+.fv-heap-canvas {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0;
+}
+
+.fv-heap-canvas canvas {
+  display: block;
+}
+
+.fv-heap-canvas .fv-empty {
+  padding: 10px;
+}
+
+/* The evidence panel. Always available, because a drawing the user doubts must be interrogable. */
+.fv-heap-detail {
+  border-top: 1px solid var(--fv-border);
+  background: var(--fv-surface-2);
+  padding: 8px 10px;
+  max-height: 40%;
+  overflow: auto;
+}
+
+.fv-heap-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.fv-confidence {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--fv-border);
+}
+
+/* Confidence is a word first. The tint only reinforces it. */
+.fv-confidence.is-high {
+  color: var(--fv-good);
+  border-color: color-mix(in srgb, var(--fv-good) 50%, transparent);
+}
+
+.fv-confidence.is-medium {
+  color: var(--fv-warn);
+  border-color: color-mix(in srgb, var(--fv-warn) 50%, transparent);
+}
+
+.fv-confidence.is-low {
+  color: var(--fv-muted);
+}
+
+.fv-evidence {
+  margin: 6px 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--fv-muted);
+}
+
+.fv-evidence li {
+  margin: 2px 0;
+}
+
+.fv-override {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--fv-muted);
+  flex-wrap: wrap;
+}
+
+.fv-override select {
+  font-size: 12px;
+}
+
+
+/* What the heap contains, named. Makes the evidence discoverable without hunting on the canvas. */
+.fv-structures {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--fv-border);
+  background: color-mix(in srgb, var(--fv-surface-2) 60%, transparent);
+}
+
+.fv-structure {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.fv-structure.is-selected {
+  background: var(--fv-accent-dim);
+  border-color: var(--fv-accent);
+}
+
+.fv-structure-size {
+  font-family: var(--fv-mono);
+  font-size: 9px;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: #ffffff18;
+  color: var(--fv-muted);
+}
+
+
+/* A drawn marker rather than a bullet character, so it does not depend on the font. */
+.fv-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 5px;
+  border-radius: 50%;
+  background: var(--fv-accent);
+  vertical-align: 1px;
 }

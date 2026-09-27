@@ -1,7 +1,7 @@
 /**
  * Transport icons as inline SVG.
  *
- * Deliberately not Unicode glyphs. Characters like ⏮ and ❚❚ depend on a font that happens to
+ * Deliberately not Unicode glyphs. The media-control characters depend on a font that happens to
  * contain them, and where it does not the user gets tofu boxes in place of the play button — which
  * was exactly what happened the first time this UI was checked in a clean browser. SVG draws the
  * same everywhere and scales with the text.

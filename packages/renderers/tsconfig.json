@@ -6,5 +6,9 @@
     "jsx": "react-jsx"
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"],
-  "references": [{ "path": "../trace-schema" }, { "path": "../trace-store" }]
+  "references": [
+    { "path": "../trace-schema" },
+    { "path": "../trace-store" },
+    { "path": "../inference" }
+  ]
 }

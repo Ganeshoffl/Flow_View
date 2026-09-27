@@ -14,6 +14,8 @@ export default defineConfig({
       "@flow-view/trace-schema": src("trace-schema"),
       "@flow-view/trace-store": src("trace-store"),
       "@flow-view/trace-fixtures": src("trace-fixtures"),
+      "@flow-view/inference": src("inference"),
+      "@flow-view/renderers": src("renderers"),
     },
   },
   test: {

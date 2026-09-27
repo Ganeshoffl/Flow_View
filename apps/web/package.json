@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@flow-view/renderers": "workspace:*",
+    "@flow-view/inference": "workspace:*",
     "@flow-view/trace-fixtures": "workspace:*",
     "@flow-view/trace-schema": "workspace:*",
     "@flow-view/trace-store": "workspace:*",

@@ -10,6 +10,8 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=scripts/_env.sh
+source "$ROOT/scripts/_env.sh"
 SESSION="${1:-fv-live}"
 cd "$ROOT"
 
@@ -20,7 +22,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-PYTHONPATH="$ROOT/apps/server" "$ROOT/.venv/bin/python" -m flow_view_server \
+PYTHONPATH="$ROOT/apps/server" "$PYTHON" -m flow_view_server \
   --no-browser --port 7474 >/tmp/fv-server.log 2>&1 &
 SERVER_PID=$!
 

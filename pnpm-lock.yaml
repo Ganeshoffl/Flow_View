@@ -17,6 +17,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@flow-view/inference':
+        specifier: workspace:*
+        version: link:../../packages/inference
       '@flow-view/renderers':
         specifier: workspace:*
         version: link:../../packages/renderers
@@ -55,8 +58,27 @@ importers:
         specifier: ^6.0.7
         version: 6.4.3(@types/node@22.20.4)
 
+  packages/inference:
+    dependencies:
+      '@flow-view/trace-schema':
+        specifier: workspace:*
+        version: link:../trace-schema
+      '@flow-view/trace-store':
+        specifier: workspace:*
+        version: link:../trace-store
+    devDependencies:
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.4)
+
   packages/renderers:
     dependencies:
+      '@flow-view/inference':
+        specifier: workspace:*
+        version: link:../inference
       '@flow-view/trace-schema':
         specifier: workspace:*
         version: link:../trace-schema

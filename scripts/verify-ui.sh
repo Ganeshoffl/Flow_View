@@ -11,6 +11,8 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=scripts/_env.sh
+source "$ROOT/scripts/_env.sh"
 SESSION="${1:-fv-verify}"
 URL="http://127.0.0.1:5173/"
 FAILURES=0
@@ -37,6 +39,14 @@ ab open "$URL" >/dev/null 2>&1
 ab snapshot >/dev/null 2>&1
 
 evaluate() { ab eval "$1" 2>&1 | tail -2 | head -1 | sed 's/^"//; s/"$//'; }
+
+# The app opens on "Run your code", so switch to the examples before looking for the picker.
+ab eval "(() => {
+  const tab = [...document.querySelectorAll('[role=tab]')].find(t => t.textContent === 'Examples');
+  if (tab) tab.click();
+  return tab ? 'switched' : 'no tab';
+})()" >/dev/null 2>&1
+ab snapshot >/dev/null 2>&1
 
 fixtures="$(evaluate "(() => [...document.querySelectorAll('#fixture option')].map(o => o.value).join(' '))()")"
 if [ -z "$fixtures" ]; then

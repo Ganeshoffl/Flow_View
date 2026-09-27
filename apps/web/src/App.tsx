@@ -14,6 +14,7 @@ import { useCallback, useMemo, useState } from "react";
 import { FIXTURES, getFixture } from "@flow-view/trace-fixtures";
 import {
   CodePane,
+  HeapPane,
   MetricsPane,
   OutputPane,
   PlaybackBar,
@@ -93,7 +94,14 @@ function LiveMode({ highlighted, onHighlight }: ModeProps) {
   const [source, setSource] = useState(STARTER);
   const [stdin, setStdin] = useState("");
 
+  // Which of the editor and the traced code occupies the left pane.
+  //
+  // Running used to replace the editor permanently, so after one run the only way to change the
+  // program was to reload the page. Editing what you just watched is the whole loop.
+  const [editing, setEditing] = useState(true);
+
   const run = useCallback(() => {
+    setEditing(false);
     live.run({
       source,
       language: "python",
@@ -110,25 +118,38 @@ function LiveMode({ highlighted, onHighlight }: ModeProps) {
   }, [live.session, live.store, source]);
 
   const started = live.status !== "idle" && live.session !== undefined;
+  const showingCode = started && !editing;
 
   return (
     <>
-      <RunControls live={live} onRun={run} stdin={stdin} onStdinChange={setStdin} />
+      <RunControls
+        live={live}
+        onRun={run}
+        stdin={stdin}
+        onStdinChange={setStdin}
+        editing={editing}
+        canToggleEditing={started}
+        onToggleEditing={() => setEditing((value) => !value)}
+      />
 
       <main className="fv-main">
-        {started ? (
-          <CodePane store={live.store} source={tracedSource} language="python" />
-        ) : (
-          <Editor
-            value={source}
-            language="python"
-            onChange={setSource}
-            onRun={run}
-            disabled={live.status === "running"}
-          />
-        )}
-        <div className="fv-column">
+        <div className="fv-area is-code">
+          {showingCode ? (
+            <CodePane store={live.store} source={tracedSource} language="python" />
+          ) : (
+            <Editor
+              value={source}
+              language="python"
+              onChange={setSource}
+              onRun={run}
+              disabled={live.status === "running"}
+            />
+          )}
+        </div>
+        <div className="fv-area is-stack">
           <StackPane store={live.store} language="python" />
+        </div>
+        <div className="fv-area is-vars">
           <VariablesPane
             store={live.store}
             language="python"
@@ -136,7 +157,15 @@ function LiveMode({ highlighted, onHighlight }: ModeProps) {
             onHighlightObject={onHighlight}
           />
         </div>
-        <div className="fv-column">
+        <div className="fv-area is-heap">
+          <HeapPane
+            store={live.store}
+            language="python"
+            highlightedObject={highlighted}
+            onHighlightObject={onHighlight}
+          />
+        </div>
+        <div className="fv-area is-side">
           <OutputPane store={live.store} />
           <MetricsPane store={live.store} />
         </div>
@@ -206,14 +235,18 @@ function ExampleMode({ highlighted, onHighlight }: ModeProps) {
       </div>
 
       <main className="fv-main">
-        <CodePane
-          store={store}
-          source={fixture.source}
-          language={fixture.language}
-          onSelectLine={seekToLine}
-        />
-        <div className="fv-column">
+        <div className="fv-area is-code">
+          <CodePane
+            store={store}
+            source={fixture.source}
+            language={fixture.language}
+            onSelectLine={seekToLine}
+          />
+        </div>
+        <div className="fv-area is-stack">
           <StackPane store={store} language={fixture.language} />
+        </div>
+        <div className="fv-area is-vars">
           <VariablesPane
             store={store}
             language={fixture.language}
@@ -221,7 +254,15 @@ function ExampleMode({ highlighted, onHighlight }: ModeProps) {
             onHighlightObject={onHighlight}
           />
         </div>
-        <div className="fv-column">
+        <div className="fv-area is-heap">
+          <HeapPane
+            store={store}
+            language={fixture.language}
+            highlightedObject={highlighted}
+            onHighlightObject={onHighlight}
+          />
+        </div>
+        <div className="fv-area is-side">
           <OutputPane store={store} />
           <MetricsPane store={store} />
         </div>

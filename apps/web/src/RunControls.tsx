@@ -17,9 +17,21 @@ export interface RunControlsProps {
   readonly onRun: () => void;
   readonly stdin: string;
   readonly onStdinChange: (value: string) => void;
+  /** True while the editor occupies the left pane rather than the traced code. */
+  readonly editing: boolean;
+  readonly canToggleEditing: boolean;
+  readonly onToggleEditing: () => void;
 }
 
-export function RunControls({ live, onRun, stdin, onStdinChange }: RunControlsProps) {
+export function RunControls({
+  live,
+  onRun,
+  stdin,
+  onStdinChange,
+  editing,
+  canToggleEditing,
+  onToggleEditing,
+}: RunControlsProps) {
   const [answer, setAnswer] = useState("");
   const [showStdin, setShowStdin] = useState(false);
 
@@ -47,6 +59,12 @@ export function RunControls({ live, onRun, stdin, onStdinChange }: RunControlsPr
 
         <span className={`fv-status is-${live.status}`}>{describeStatus(live.status)}</span>
 
+        {canToggleEditing ? (
+          <button type="button" className="fv-toggle" onClick={onToggleEditing}>
+            {editing ? "Show the run" : "Edit code"}
+          </button>
+        ) : null}
+
         <button
           type="button"
           className="fv-toggle"
@@ -54,7 +72,7 @@ export function RunControls({ live, onRun, stdin, onStdinChange }: RunControlsPr
           onClick={() => setShowStdin((value) => !value)}
           title="Supply input up front, so the run replays without anyone typing"
         >
-          Input {stdin.trim() ? "•" : ""}
+          Input{stdin.trim() ? <span className="fv-dot" aria-label="input is set" /> : null}
         </button>
 
         {started ? (
