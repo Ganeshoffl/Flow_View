@@ -33,6 +33,13 @@ needs_monitoring = pytest.mark.skipif(
 )
 
 
+def _by_func(frames: list[dict[str, object]]) -> dict[str, int]:
+    """Frame counts per function name, for a failure message that explains itself."""
+    import collections
+
+    return dict(collections.Counter(str(f["func"]) for f in frames))
+
+
 class TestDefault:
     def test_settrace_is_the_default_on_every_version(self) -> None:
         # Not a per-version choice. The same program must trace the same way on 3.10 and on 3.14, or a
@@ -88,7 +95,19 @@ class TestMonitoringCorrectness:
         library_monitoring = [
             e for e in monitoring if e["t"] == "frame_push" and e.get("kind") == "library"
         ]
-        assert len(library_monitoring) == len(library_settrace)
+        # Report *which* frames differ, not just how many.
+        #
+        # This has been seen to fail with 90 against 60, intermittently, and only when the whole suite
+        # runs in one process. It could not be pinned down, because any attempt to observe it made it
+        # stop happening: tracing the same program twice immediately beforehand was enough to mask it.
+        # Since it cannot be reproduced on demand, the next occurrence has to carry its own evidence.
+        assert len(library_monitoring) == len(library_settrace), (
+            "the backends disagree about which library frames a run enters.\n"
+            f"  settrace   {len(library_settrace):4}: {_by_func(library_settrace)}\n"
+            f"  monitoring {len(library_monitoring):4}: {_by_func(library_monitoring)}\n"
+            "If the difference is extra _iterencode frames, json took its Python encoding path in one "
+            "run and its C path in the other, and the backends are not the thing that differs."
+        )
         assert len(library_monitoring) >= 20, "every call must be reported, not just the first"
 
     def test_no_line_steps_are_recorded_inside_library_code(self) -> None:
