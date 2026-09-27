@@ -38,6 +38,7 @@ from .analysis import LineInfo, SourceAnalysis, analyze
 from .backends import choose_backend
 from .emit import BudgetExceeded, Emitter, Limits, encode_primitive, encode_value
 from .walk import (
+    is_interpreter_name,
     DEFAULT_MAX_DEPTH,
     DEFAULT_MAX_OBJECTS,
     DEFAULT_MAX_SLOTS,
@@ -365,15 +366,21 @@ class Tracer:
         """
         frame_locals = frame.f_locals
         if info is None:
+            # Interpreter bindings are excluded here for the same reason `_diff_locals` excludes them
+            # from the variables pane: they are not the program's data. They were not, and the module
+            # frame's locals *are* its globals, so `__builtins__` became a walk root — and through the
+            # `input` the tracer installs there, the whole tracer became the user's heap.
             return [
                 (name, value)
                 for name, value in frame_locals.items()
-                if not is_atomic(value)
+                if not is_atomic(value) and not is_interpreter_name(name)
             ]
 
         roots: list[tuple[str, Any]] = []
         globals_ = frame.f_globals
         for name in info.names:
+            if is_interpreter_name(name):
+                continue
             if name in frame_locals:
                 value = frame_locals[name]
             elif name in globals_:
@@ -401,7 +408,7 @@ class Tracer:
         fresh: list[tuple[str, Any]] = []
 
         for name, value in current.items():
-            if name.startswith("__") and name.endswith("__"):
+            if is_interpreter_name(name):
                 continue
             had = name in previous
             if had and not _values_differ(previous[name], value):
@@ -425,7 +432,7 @@ class Tracer:
             self._metric("assignment")
 
         for name in list(previous):
-            if name not in current and not (name.startswith("__") and name.endswith("__")):
+            if name not in current and not is_interpreter_name(name):
                 self.emitter.emit(
                     "var_del",
                     {"frame": frame_id, "name": name, "prev": self._encode(previous[name])},
@@ -849,6 +856,23 @@ class Tracer:
             # never raised.
             return
 
+        state = self._frames.get(id(frame))
+        if state is None or state.kind == "library":
+            # A library's private business. Plenty of ordinary calls raise and catch internally —
+            # `re.findall` misses its pattern cache and swallows a KeyError — and this reported each one
+            # as an exception the program had raised, stamped with the *user's* file path and a line
+            # number from somebody else's source.
+            #
+            # Worse, it set the unwinding flag, and only a line event in a traced frame clears it.
+            # A catch inside library code produces no such event, so the flag stayed set: the frame's
+            # last statement was then skipped and its return reported as an exception. `hits =
+            # re.findall(...)` as a program's final line simply lost `hits`.
+            #
+            # An exception that matters to the program reaches the program, and settrace fires an event
+            # in every frame it passes through — so the one in the user's own frame is still reported,
+            # at the user's own line, which is where they would look for it.
+            return
+
         self._unwinding = True
 
         # settrace fires an exception event in every frame the exception passes through. Only the
@@ -859,16 +883,16 @@ class Tracer:
             return
         self._active_exception = identity
 
-        state = self._frames.get(id(frame))
-        payload: dict[str, Any] = {
-            "type": exc_type.__name__,
-            "message": str(exc_value),
-            "line": frame.f_lineno,
-            "path": self.display_path,
-        }
-        if state is not None:
-            payload["frame"] = state.frame_id
-        self.emitter.emit("exception_raise", payload)
+        self.emitter.emit(
+            "exception_raise",
+            {
+                "type": exc_type.__name__,
+                "message": str(exc_value),
+                "line": frame.f_lineno,
+                "path": self.display_path,
+                "frame": state.frame_id,
+            },
+        )
 
     def _note_handled(self, state: _FrameState, line: int) -> None:
         """Record that a propagating exception was caught here.

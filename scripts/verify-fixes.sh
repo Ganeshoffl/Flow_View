@@ -96,6 +96,7 @@ EMIT=adapters/python/flow_view_tracer/emit.py
 RUNNER=apps/server/flow_view_server/runner.py
 APP=apps/server/flow_view_server/app.py
 ANALYSIS=adapters/python/flow_view_tracer/analysis.py
+WALK=adapters/python/flow_view_tracer/walk.py
 
 heading "the program's own execution, and nothing else"
 
@@ -135,6 +136,27 @@ check "in_scope stops at the immediate caller" "$TRACER" \
         current = frame.f_back
         while current is not None and hops < 1:' \
   adapters/python/tests conformance/tests
+
+heading "the heap holds the program's data, and nothing else"
+
+check "interpreter bindings used as heap roots" "$TRACER" \
+  'if not is_atomic(value) and not is_interpreter_name(name)' \
+  'if not is_atomic(value)' \
+  adapters/python/tests
+
+check "flow_view's own objects walked" "$WALK" \
+  '    if _is_flow_view_object(obj):
+        return False
+' \
+  '' \
+  adapters/python/tests
+
+check "a library's private exceptions reported as the program's" "$TRACER" \
+  '        state = self._frames.get(id(frame))
+        if state is None or state.kind == "library":' \
+  '        state = self._frames.get(id(frame))
+        if False:' \
+  adapters/python/tests
 
 heading "a blocked program can still speak"
 

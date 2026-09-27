@@ -381,3 +381,44 @@ class TestLocalsComparison:
         before = {"x": values}
         values.append(2)
         assert not locals_changed(before, {"x": values})
+
+
+
+class TestFlowViewIsNotPartOfAnyProgram:
+    """The walker refuses flow_view's own objects, whatever route reaches them.
+
+    Belt and braces. Skipping interpreter bindings already cuts the route that caused the trouble — the
+    user's globals hold `__builtins__`, which is a dict inside an imported module and so was walked, and
+    the tracer's own `input` replacement lives there with a reference back to the whole tracer. With that
+    cut, nothing reaches these objects any more.
+
+    Which is exactly why this is tested here rather than through a program: the guard is unreachable via
+    the walk now, so a test that ran a program would pass with the guard deleted. The frame filter
+    already makes sure flow_view cannot appear in its own trace as a *call*; there is no reason it
+    should be able to appear as an *object* if some later change opens a new route.
+    """
+
+    def test_a_tracer_object_is_never_followed(self) -> None:
+        from flow_view_tracer.emit import Emitter, Limits
+        from flow_view_tracer.walk import _should_follow
+
+        emitter = Emitter(on_event=lambda event: None, limits=Limits())
+        assert _should_follow(emitter, False) is False
+        assert _should_follow(Limits(), False) is False
+
+    def test_it_is_refused_even_when_opaque_types_are_being_followed(self) -> None:
+        # `follow_opaque` is the "show me everything" switch. It means the user's everything.
+        from flow_view_tracer.emit import Limits
+        from flow_view_tracer.walk import _should_follow
+
+        assert _should_follow(Limits(), True) is False
+
+    def test_an_ordinary_object_of_the_users_is_still_followed(self) -> None:
+        from flow_view_tracer.walk import _should_follow
+
+        class Theirs:
+            def __init__(self) -> None:
+                self.value = 1
+
+        assert _should_follow(Theirs(), False) is True
+        assert _should_follow([1, 2, 3], False) is True

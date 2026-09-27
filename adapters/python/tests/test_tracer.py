@@ -879,3 +879,195 @@ class TestSayingWhatTracingChanges:
         assert "gone" not in printed, (
             "the finalizer now runs inside the traced region, so the warning is no longer true"
         )
+
+
+
+class TestTheHeapHoldsTheProgramsDataAndNothingElse:
+    """What the heap view is allowed to contain.
+
+    A program whose only sin was `from dataclasses import dataclass` arrived with **49 objects** and a
+    note saying the heap was beyond inspection limits. Among them: `Tracer`, `Emitter`, `Registry`,
+    `SourceAnalysis`, `TracerOptions`, `Limits` and `_FrameState` — flow_view's own insides, presented
+    as the user's data, having spent the object budget getting there.
+
+    The route was worth writing down, because nothing about it is obvious:
+
+        the user's module globals
+          -> __builtins__            (a *dict*, because the tracer module is imported, so it is walked)
+            -> input                 (replaced by the tracer's own bridge)
+              -> _tracer -> emitter -> registry -> ...
+
+    Two things were wrong. `_diff_locals` already skipped interpreter bindings, so `__builtins__` never
+    appeared as a *variable* — but `_roots_for` used it as a walk root, so a name the user could not see
+    flooded the view they could. And nothing stopped flow_view's own objects being walked once reached.
+    """
+
+    def test_a_dataclass_program_shows_only_its_own_objects(self) -> None:
+        traced = Traced(
+            "from dataclasses import dataclass\n"
+            "\n"
+            "\n"
+            "@dataclass\n"
+            "class Node:\n"
+            "    value: int\n"
+            "    next: object = None\n"
+            "\n"
+            "\n"
+            "a = Node(1)\n"
+            "b = Node(2)\n"
+            "a.next = b\n"
+        )
+        announced = [e["type_name"] for e in traced.of("obj_new")]
+        # The decorator the import bound, the class the program defined, and its two instances.
+        assert sorted(announced) == ["Node", "Node", "function", "type"], announced
+
+    @pytest.mark.parametrize(
+        ("label", "source", "expected"),
+        [
+            ("json", "import json\nd = {'a': 1}\ns = json.dumps(d)\n", ["dict", "module"]),
+            ("re", "import re\nhits = re.findall(r'x', 'xx')\n", ["list", "module"]),
+            ("no imports at all", "xs = [1, 2, 3]\nt = sum(xs)\n", ["list"]),
+        ],
+    )
+    def test_importing_a_library_costs_one_object(
+        self, label: str, source: str, expected: list[str]
+    ) -> None:
+        traced = Traced(source)
+        assert sorted(e["type_name"] for e in traced.of("obj_new")) == expected, label
+
+    def test_flow_view_never_appears_in_its_own_heap(self) -> None:
+        # The category, not just the one route. The frame filter already keeps flow_view out of its own
+        # trace as a *call*; there is no reason it should be able to appear as an *object* either.
+        traced = Traced(
+            "from dataclasses import dataclass\n"
+            "import json\n"
+            "\n"
+            "\n"
+            "@dataclass\n"
+            "class Thing:\n"
+            "    n: int\n"
+            "\n"
+            "\n"
+            "t = Thing(1)\n"
+            "s = json.dumps({'n': t.n})\n"
+            "x = input() if False else 'skipped'\n"
+        )
+        ours = {
+            "Tracer",
+            "Emitter",
+            "Registry",
+            "SourceAnalysis",
+            "TracerOptions",
+            "Limits",
+            "_FrameState",
+            "_InputBridge",
+            "_OutputProxy",
+        }
+        announced = {e["type_name"] for e in traced.of("obj_new")}
+        assert not (announced & ours), f"the tracer put itself in the heap: {announced & ours}"
+
+    def test_the_object_budget_is_not_spent_on_the_interpreter(self) -> None:
+        # The budget exists to protect the user from their own large data structures. It was being used
+        # up before their data was reached, so the note fired on a twelve-line program.
+        traced = Traced(
+            "from dataclasses import dataclass\n"
+            "\n"
+            "\n"
+            "@dataclass\n"
+            "class P:\n"
+            "    x: int\n"
+            "\n"
+            "\n"
+            "ps = [P(i) for i in range(3)]\n"
+        )
+        limits = [e["text"] for e in traced.of("note") if "inspection limits" in e["text"]]
+        assert limits == [], f"the heap budget was exhausted on a tiny program: {limits}"
+
+    def test_a_user_object_holding_a_library_object_still_shows_it(self) -> None:
+        # The rule is "not flow_view's own" and "not the interpreter's bindings", not "nothing from a
+        # library". Something the program deliberately holds is the program's data.
+        traced = Traced(
+            "import io\n"
+            "\n"
+            "\n"
+            "class Wrapper:\n"
+            "    def __init__(self):\n"
+            "        self.sink = io.StringIO()\n"
+            "\n"
+            "\n"
+            "w = Wrapper()\n"
+        )
+        announced = {e["type_name"] for e in traced.of("obj_new")}
+        assert "Wrapper" in announced
+        assert "StringIO" in announced, f"the object the program made is missing: {announced}"
+
+
+
+class TestALibrarysOwnExceptionsAreNotThePrograms:
+    """Ordinary calls raise and catch internally, and that is not the program's business.
+
+    `re.findall` misses its pattern cache and swallows a `KeyError`. Every one of those was reported as
+    an exception the program had raised — stamped with the *user's* file path and a line number from
+    `re/__init__.py`, so a two-line program was told it raised `KeyError` at line 285.
+
+    The second half was worse. Reporting it set the unwinding flag, and only a line event in a traced
+    frame clears that. A catch inside library code produces no such event, so the flag stayed set for the
+    rest of the frame: its last statement was skipped and its return was reported as an exception. This
+    program lost `hits` entirely —
+
+        import re
+        hits = re.findall(r'x', 'xx')
+
+    — and said it had exited by exception. On a program that raises nothing.
+    """
+
+    def test_a_library_catching_its_own_exception_is_silent(self) -> None:
+        traced = Traced("import re\nhits = re.findall(r'x', 'xx')\n")
+        assert traced.of("exception_raise") == []
+        assert traced.of("exception_uncaught") == []
+
+    def test_the_last_statement_is_not_lost_to_it(self) -> None:
+        traced = Traced("import re\nhits = re.findall(r'x', 'xx')\n")
+        # A list arrives as a heap reference, so the assignment existing at all is the point here.
+        assert traced.sets_of("hits"), "the program's last assignment went missing"
+        assert "ref" in traced.final("hits")
+
+    def test_the_frame_is_not_reported_as_having_failed(self) -> None:
+        traced = Traced("import re\nhits = re.findall(r'x', 'xx')\n")
+        reasons = [e["reason"] for e in traced.of("frame_pop")]
+        assert "exception" not in reasons, f"a program that raises nothing reported {reasons}"
+        assert traced.status == "ok"
+
+    def test_an_exception_that_reaches_the_program_is_still_reported(self) -> None:
+        # The point is attribution, not silence. settrace fires an event in every frame the exception
+        # passes through, so the one in the user's own frame is still there to report.
+        traced = Traced("n = int('not a number')\n")
+        raised = traced.one("exception_raise")
+        assert raised["type"] == "ValueError"
+        assert raised["line"] == 1
+        assert traced.status == "error"
+
+    def test_it_is_reported_at_the_users_line_not_the_librarys(self) -> None:
+        traced = Traced(
+            "import json\n"
+            "try:\n"
+            "    d = json.loads('{')\n"
+            "except Exception as e:\n"
+            "    why = type(e).__name__\n"
+        )
+        raised = traced.one("exception_raise")
+        assert raised["type"] == "JSONDecodeError"
+        # Line 3 is where the program called it. json/decoder.py is where it happened, and that is not
+        # a line the reader can look at.
+        assert raised["line"] == 3
+        assert traced.of("exception_catch")
+        assert traced.final("why")["prim"] == "JSONDecodeError"
+
+    def test_the_users_own_raise_and_catch_still_work(self) -> None:
+        traced = Traced(
+            "try:\n    raise ValueError('mine')\nexcept ValueError as e:\n    caught = str(e)\n"
+        )
+        assert traced.one("exception_raise")["line"] == 2
+        assert traced.one("exception_catch")["line"] == 3
+        assert traced.final("caught")["prim"] == "mine"
+        assert traced.status == "ok"

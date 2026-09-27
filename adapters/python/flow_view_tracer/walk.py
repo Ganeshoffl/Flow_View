@@ -297,10 +297,42 @@ def _type_name(obj: object) -> str:
 # ---------------------------------------------------------------------------
 
 
+def is_interpreter_name(name: str) -> bool:
+    """Whether a binding was put there by Python rather than by the program.
+
+    ``__builtins__``, ``__spec__``, ``__loader__`` and friends are in every module's namespace. They are
+    not the program's data, they are never shown as variables — and they must not be walked either,
+    which is where this went wrong: the variables pane skipped them while the heap walk used them as
+    roots, so a name the user could not see flooded the view they could.
+    """
+    return name.startswith("__") and name.endswith("__")
+
+
+def _is_flow_view_object(obj: object) -> bool:
+    """Whether this object is part of flow_view itself.
+
+    The tracer replaces ``builtins.input`` with a bridge that holds a reference back to the tracer. The
+    user's module globals contain ``__builtins__``, which inside an imported module is a *dict* and so
+    is walked — so a program that did nothing but import dataclasses showed `Tracer`, `Emitter`,
+    `Registry`, `SourceAnalysis`, `TracerOptions`, `Limits` and `_FrameState` as its own heap, and spent
+    its object budget getting there.
+
+    Skipping ``__builtins__`` cuts that path. This closes the category: the frame filter already makes
+    sure flow_view cannot appear in its own trace as a *call*, and there is no reason it should be able
+    to appear as an *object* either, whatever route some future change opens up.
+    """
+    return type(obj).__module__.startswith("flow_view")
+
+
 def _should_follow(obj: object, follow_opaque: bool) -> bool:
+    # Ordered by cost and by how often each answer is the last word. Most slots hold atomic values, so
+    # the set lookup settles it; the module-name comparison is only reached for something that would
+    # otherwise be traversed.
     if is_atomic(obj):
         return False
     if not follow_opaque and isinstance(obj, _OPAQUE_TYPES):
+        return False
+    if _is_flow_view_object(obj):
         return False
     return True
 
