@@ -133,6 +133,26 @@ Make long programs survivable, while streaming.
 - [ ] 4.4 TraceStore retention policy: detail near the playhead, summaries far from it
 - [ ] 4.5 Delta-encoded snapshots with periodic full keyframes; interval adapted to heap size, tuned
       against trace bytes versus seek latency
+
+      Now measured rather than assumed, at 100,000 retained steps
+      (`packages/trace-store/test/seek-latency.test.ts`):
+
+      | operation | 1 event/step | 4 events/step | budget |
+      |---|---|---|---|
+      | one `next()` / `prev()` | 0.001 ms | 0.002 ms | 50 ms |
+      | 1000-step seek | 0.12 ms | 0.59 ms | 50 ms |
+      | full-length backward jump | 9.6 ms | 51.1 ms | 50 ms |
+      | full-length forward jump | 42.6 ms | **110.8 ms** | 50 ms |
+
+      Stepping is effectively free because every event carries its own inverse, and dragging the
+      playback bar is a run of short seeks. The single long-distance jump is the one operation that
+      misses, and it misses by 2× on a trace with a realistic number of events per step.
+
+      Backward is cheaper than forward because the undo journal is already built behind the playhead;
+      forward from a cold start has to apply events and build it. That is also why a keyframe cache
+      of visited positions would not help the *first* jump, which is the one a user notices — the
+      acceleration has to come from `snapshot` events the adapter emits, which is what this task is.
+      The store has `captureState` but nothing that restores one, so there is no shortcut to bolt on.
 - [ ] 4.6 Adversarial corpus: million-iteration loops, deep recursion, wide heaps, huge strings
 
 **Gate:** a one-million-iteration loop traces to completion, stays responsive, reports accurate final
