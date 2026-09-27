@@ -188,6 +188,45 @@ export function resetState(state: TraceState): void {
   state.version++;
 }
 
+/**
+ * A detached copy of the whole state, for use as a seek keyframe.
+ *
+ * Deliberately structural rather than a hand-written field list. `restoreState` below walks whatever
+ * keys exist, so a field added to `TraceState` later is copied without anyone remembering to come back
+ * here — and a field silently missed is exactly the bug that would make a seek land in a state that
+ * looks plausible and is wrong.
+ */
+export function snapshotState(state: TraceState): TraceState {
+  return structuredClone(state) as TraceState;
+}
+
+/**
+ * Overwrite `target` with the contents of `source`, in place.
+ *
+ * In place because `TraceStore.state` is a stable reference that every pane holds. Replacing the object
+ * would leave the UI reading a state the store had stopped updating.
+ *
+ * Everything is cloned on the way out, so a keyframe can be restored any number of times without the
+ * live state ever sharing structure with it. Sharing would mean the next mutation quietly corrupted the
+ * keyframe, and the seek after that would land somewhere that never existed.
+ */
+export function restoreState(target: TraceState, source: TraceState): void {
+  const sink = target as unknown as Record<string, unknown>;
+  for (const [key, value] of Object.entries(source as unknown as Record<string, unknown>)) {
+    const current = sink[key];
+    if (value instanceof Map && current instanceof Map) {
+      current.clear();
+      for (const [k, v] of value) current.set(k, structuredClone(v));
+    } else if (Array.isArray(value) && Array.isArray(current)) {
+      current.length = 0;
+      for (const item of value) current.push(structuredClone(item));
+    } else {
+      sink[key] = structuredClone(value);
+    }
+  }
+  target.version++;
+}
+
 // ---------------------------------------------------------------------------
 // reads
 // ---------------------------------------------------------------------------

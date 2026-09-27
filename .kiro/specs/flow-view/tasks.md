@@ -145,8 +145,30 @@ the exact sum. Two constraints turned out to matter more than the folding itself
 be re-requested by iteration range.
 - [ ] 4.3 Expand-on-demand by re-running a single region with folding disabled
 - [ ] 4.4 TraceStore retention policy: detail near the playhead, summaries far from it
-- [ ] 4.5 Delta-encoded snapshots with periodic full keyframes; interval adapted to heap size, tuned
+- [~] 4.5 Delta-encoded snapshots with periodic full keyframes; interval adapted to heap size, tuned
       against trace bytes versus seek latency
+
+      **Keyframes done, in the store rather than the trace.** The store captures a detached copy of its
+      state every few thousand events *as the playhead moves forward*, and a seek takes whichever route
+      is cheapest: walk from here, restore the nearest keyframe behind the target, or replay from the
+      start. Full-length jump at 100,000 steps:
+
+      | | cold | warm |
+      |---|---|---|
+      | 1 event/step | 42.7 ms | **0.9 ms** |
+      | 4 events/step | 163.2 ms | **0.6 ms** |
+
+      Warm means the trace has been played through once, which a live run always has, because the
+      playhead follows the streaming edge. So the budget is met on the path users actually take.
+
+      Forward-only capture is the safety property, not an accident: the undo journal behind a keyframe
+      was necessarily built on the way past it, so restoring one and then stepping *backwards* still has
+      every inverse it needs. Equivalence with sequential replay is asserted at seven positions, after
+      mixed forward/backward jumping, and after 300 single back-steps from a restored keyframe.
+
+      **Still to do:** the cold case, and it needs the `snapshot` events the schema already defines.
+      Keyframes cannot help a trace that has never been walked. Delta encoding and heap-size-adapted
+      intervals belong with that.
 
       Now measured rather than assumed, at 100,000 retained steps
       (`packages/trace-store/test/seek-latency.test.ts`):

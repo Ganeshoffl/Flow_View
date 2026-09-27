@@ -23,7 +23,40 @@ import {
 } from "@flow-view/trace-schema";
 
 import { type UndoRecord, applyEvent, revertEvent } from "./apply.js";
-import { type TraceState, createState, focusFrame, resetState } from "./state.js";
+import {
+  type TraceState,
+  createState,
+  focusFrame,
+  resetState,
+  restoreState,
+  snapshotState,
+} from "./state.js";
+
+/**
+ * Events between seek keyframes.
+ *
+ * Small enough that walking from one costs a fraction of a frame, large enough that a short trace never
+ * pays for a copy it will not use. Doubles as the trace grows; see `maybeCapture`.
+ */
+const KEYFRAME_INTERVAL = 2000;
+
+/**
+ * How many keyframes to keep.
+ *
+ * Each is a copy of the state, so this is the memory ceiling. Thirty-two is a few hundred kilobytes for
+ * the heaps the adapter's own caps allow, and enough that no point in a trace is far from one.
+ */
+const MAX_KEYFRAMES = 32;
+
+/**
+ * What restoring a keyframe costs, expressed in events so the routes can be compared.
+ *
+ * Copying the state is not free, so a keyframe two events behind the target is worse than simply
+ * stepping there. Measured at roughly this many events' worth of work for the heaps the adapter
+ * produces; the exact figure matters little, because the cases it decides are the ones where either
+ * route is fast.
+ */
+const KEYFRAME_RESTORE_COST = 250;
 
 /** What a jump-to-change search should follow. */
 export type ChangeTarget =
@@ -54,6 +87,21 @@ export class TraceStore {
   private readonly checkSchema: boolean;
   /** True once run_end has been appended, so the UI can distinguish streaming from finished. */
   private complete = false;
+
+  /**
+   * Detached copies of the state at intervals, so a seek does not have to replay from the beginning.
+   *
+   * Captured as the playhead moves *forward* and never otherwise. That is what makes them safe: the
+   * undo journal behind a keyframe was necessarily built on the way past it, so restoring one and then
+   * stepping backwards still has every inverse it needs.
+   *
+   * It is also enough in practice. A live run streams with the playhead following the edge, so by the
+   * time there is a long trace to scrub, the whole of it has been walked once.
+   *
+   * Kept in ascending cursor order.
+   */
+  private readonly keyframes: { cursor: number; state: TraceState }[] = [];
+  private keyframeInterval = KEYFRAME_INTERVAL;
 
   constructor(options: TraceStoreOptions = {}) {
     this.checkSchema = options.checkSchema ?? true;
@@ -107,6 +155,8 @@ export class TraceStore {
     this.cursor = 0;
     this.complete = false;
     this.session = undefined;
+    this.keyframes.length = 0;
+    this.keyframeInterval = KEYFRAME_INTERVAL;
     resetState(this.state);
     this.notify();
   }
@@ -168,7 +218,43 @@ export class TraceStore {
     if (!event) return false;
     this.undo[this.cursor] = applyEvent(this.state, event);
     this.cursor++;
+    this.maybeCapture();
     return true;
+  }
+
+  /** Record a keyframe if the playhead has moved far enough past the last one. */
+  private maybeCapture(): void {
+    const last = this.keyframes[this.keyframes.length - 1];
+    if (last !== undefined && this.cursor - last.cursor < this.keyframeInterval) return;
+    if (last !== undefined && this.cursor <= last.cursor) return;
+
+    this.keyframes.push({ cursor: this.cursor, state: snapshotState(this.state) });
+
+    // Bounded memory, uniform coverage: when there are too many, drop every other one and double the
+    // interval. The trace keeps growing, so a fixed interval would not stay bounded, and thinning
+    // evenly beats forgetting the oldest — the start of a run is exactly where someone scrubs back to.
+    if (this.keyframes.length > MAX_KEYFRAMES) {
+      for (let i = this.keyframes.length - 2; i > 0; i -= 2) this.keyframes.splice(i, 1);
+      this.keyframeInterval *= 2;
+    }
+  }
+
+  /** The recorded keyframe at or before `target`, if there is one. */
+  private keyframeAtOrBefore(target: number): { cursor: number; state: TraceState } | undefined {
+    let low = 0;
+    let high = this.keyframes.length - 1;
+    let found: { cursor: number; state: TraceState } | undefined;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      const candidate = this.keyframes[mid]!;
+      if (candidate.cursor <= target) {
+        found = candidate;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return found;
   }
 
   /** Undo exactly one event. Returns false at the start. */
@@ -224,11 +310,40 @@ export class TraceStore {
   /** Move the playhead so exactly `count` events have been applied. */
   seekEvent(count: number): void {
     const target = Math.max(0, Math.min(count, this.events.length));
-    // Phase 4 adds snapshot-accelerated seeking against the NFR-1 budget. Sequential replay is
-    // correct at every size and fast enough for fixtures and short runs, so it is what ships now.
+    this.travelTo(target);
+    this.notify();
+  }
+
+  /**
+   * Move the cursor to `target` by whichever route is cheapest.
+   *
+   * Three ways to get there: walk from where the playhead is, restore the nearest keyframe at or before
+   * the target and walk forward from that, or reset and replay from the start. Stepping one event is
+   * cheap in either direction because every event carries its own inverse; restoring a keyframe costs a
+   * copy of the state, which is why it is not always worth it and why the comparison is made in events.
+   *
+   * Measured before this existed: a full-length forward jump on a 100,000-step trace cost 43ms with one
+   * assignment per step and 111ms with four, against NFR-1's 50ms. Walking from the beginning was the
+   * only route there was.
+   */
+  private travelTo(target: number): void {
+    const fromHere = Math.abs(target - this.cursor);
+
+    const keyframe = this.keyframeAtOrBefore(target);
+    const viaKeyframe =
+      keyframe === undefined ? Infinity : target - keyframe.cursor + KEYFRAME_RESTORE_COST;
+    const fromStart = target + KEYFRAME_RESTORE_COST;
+
+    if (viaKeyframe < fromHere && viaKeyframe <= fromStart && keyframe !== undefined) {
+      restoreState(this.state, keyframe.state);
+      this.cursor = keyframe.cursor;
+    } else if (fromStart < fromHere) {
+      resetState(this.state);
+      this.cursor = 0;
+    }
+
     while (this.cursor < target) if (!this.advanceOne()) break;
     while (this.cursor > target) if (!this.retreatOne()) break;
-    this.notify();
   }
 
   /**

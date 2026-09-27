@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest";
 import type { Trace, TraceEvent } from "@flow-view/trace-schema";
 
 import { TraceStore } from "../src/store.js";
-import { compareStates } from "../src/snapshot.js";
+import { captureState, compareStates } from "../src/snapshot.js";
 
 /** One frame at 30 fps, which is the budget a single step has to fit inside. */
 const STEP_BUDGET_MS = 50;
@@ -144,27 +144,27 @@ describe(`a trace of ${RETAINED_STEPS.toLocaleString()} steps`, () => {
 });
 
 /**
- * The one operation that does not fit, measured rather than assumed.
+ * The long jump: met once the trace has been played through, which is the normal path.
  *
- * Seeking is sequential replay: reaching the far end of a 100,000-step trace means applying every
- * event in between. Measured here, on a trace with one assignment per step, a full-length forward jump
- * costs around 43 ms — inside the budget only because the trace is about as cheap as a trace can be.
- * With four events per step, closer to a real program, it is around 110 ms.
+ * Seeking used to be sequential replay, so reaching the far end of a 100,000-step trace meant applying
+ * every event in between — 43ms with one assignment per step and 111ms with four, against a 50ms budget.
  *
- * So the Phase 4 gate ("seek latency stays inside the 50 ms budget at 100k retained steps") is **not
- * met** for a single long-distance jump, and saying so is more useful than choosing a trace thin
- * enough to pass. Everything else is comfortable: stepping is microseconds because every event carries
- * its own inverse, and dragging is a succession of short seeks.
+ * Keyframes fix it for any trace that has been walked forward once, and a live run always has been,
+ * because the playhead follows the streaming edge. Measured:
  *
- * The fix is task 4.5, snapshot-accelerated seeking, and it needs the adapter to emit the `snapshot`
- * events the schema already defines — the store has `captureState` but nothing that restores one, so
- * there is no shortcut to bolt on here. Until then this test pins the current cost with a ceiling well
- * above it, so the number cannot quietly get worse while the real fix waits.
+ *              cold      warm
+ *   light     42.7ms     0.9ms
+ *   heavy    163.2ms     0.6ms
+ *
+ * Cold means a saved trace loaded and jumped to the far end without ever being played. That case still
+ * misses on a dense trace, and keyframes cannot help it: they are only captured moving forward, because
+ * the undo journal behind one has to have been built on the way past it. Closing it needs the `snapshot`
+ * events the schema defines and the adapter does not yet emit — the rest of task 4.5.
  */
-describe("a full-length jump: the part of NFR-1 that is not met yet", () => {
-  const CURRENT_CEILING_MS = 250;
+describe("a full-length jump", () => {
+  const COLD_CEILING_MS = 250;
 
-  it("costs more than the budget, and no more than it did", () => {
+  it("costs no more than it did when nothing has been played yet", () => {
     const local = new TraceStore();
     local.load(longTrace(RETAINED_STEPS));
     const last = RETAINED_STEPS - 1;
@@ -180,14 +180,11 @@ describe("a full-length jump: the part of NFR-1 that is not met yet", () => {
 
     expect(
       best,
-      `${best.toFixed(1)}ms for a full-length forward jump; the target is ${STEP_BUDGET_MS}ms ` +
-        "and needs task 4.5 (snapshot-accelerated seeking)",
-    ).toBeLessThan(CURRENT_CEILING_MS);
+      `${best.toFixed(1)}ms cold; the remaining gap needs adapter-emitted snapshots`,
+    ).toBeLessThan(COLD_CEILING_MS);
   });
 
   it("lands in exactly the state sequential stepping would", () => {
-    // Whatever the cost, the answer has to be right - and it is the thing an acceleration could
-    // plausibly break, so it is pinned before anyone accelerates it.
     const jumped = new TraceStore();
     jumped.load(longTrace(2000));
     jumped.seekStep(1500);
@@ -198,5 +195,101 @@ describe("a full-length jump: the part of NFR-1 that is not met yet", () => {
     while (stepped.state.step < 1500) stepped.next();
 
     expect(compareStates(jumped.state, stepped.state)).toEqual([]);
+  });
+});
+
+describe("seeking by keyframe lands exactly where replaying would", () => {
+  const STEPS = 6000;
+
+  /** A store that has walked the whole trace once, so keyframes exist. */
+  function warmed(): TraceStore {
+    const store = new TraceStore();
+    store.load(longTrace(STEPS));
+    store.fastForward();
+    return store;
+  }
+
+  /** A store that replays to a target from scratch, one event at a time. */
+  function replayedTo(step: number): TraceStore {
+    const store = new TraceStore();
+    store.load(longTrace(STEPS));
+    store.seekStep(0);
+    while (store.state.step < step) store.next();
+    return store;
+  }
+
+  it.each([1, 17, 500, 2001, 2999, 4000, 5999])("matches replay at step %i", (step) => {
+    const jumped = warmed();
+    jumped.seekStep(step);
+    const stepped = replayedTo(step);
+    expect(compareStates(jumped.state, stepped.state)).toEqual([]);
+  });
+
+  it("matches replay after jumping backwards and forwards repeatedly", () => {
+    const store = warmed();
+    for (const step of [5000, 100, 4500, 12, 3000, 2999, 1]) store.seekStep(step);
+    const stepped = replayedTo(1);
+    expect(compareStates(store.state, stepped.state)).toEqual([]);
+  });
+
+  it("can still step backwards one at a time after restoring a keyframe", () => {
+    // The reason keyframes are only captured moving forwards: the undo journal behind one was built on
+    // the way past it. If that were not true, this would drift.
+    const store = warmed();
+    store.seekStep(4000);
+    for (let i = 0; i < 300; i++) store.prev();
+    const stepped = replayedTo(4000 - 300);
+    expect(compareStates(store.state, stepped.state)).toEqual([]);
+  });
+
+  it("rewinds to a genuinely empty state", () => {
+    const store = warmed();
+    store.seekStep(3000);
+    store.rewind();
+    expect(store.state.frames.size).toBe(0);
+    expect(store.state.objects.size).toBe(0);
+    expect(store.state.step).toBe(-1);
+  });
+
+  it("does not let the live state share structure with a keyframe", () => {
+    // Restoring must hand out copies. Sharing would mean the next mutation quietly rewrote the keyframe,
+    // and the seek after that would land somewhere that never existed.
+    const store = warmed();
+    store.seekStep(2500);
+    const firstVisit = captureState(store.state);
+    store.seekStep(5500);
+    store.seekStep(2500);
+    expect(compareStates(store.state, { ...store.state })).toEqual([]);
+    const secondVisit = captureState(store.state);
+    expect(secondVisit).toEqual(firstVisit);
+  });
+
+  it("keeps a long trace's keyframes bounded", () => {
+    const store = new TraceStore();
+    store.load(longTrace(60_000));
+    store.fastForward();
+    const held = (store as unknown as { keyframes: unknown[] }).keyframes.length;
+    expect(held).toBeGreaterThan(0);
+    expect(held, `${held} keyframes retained`).toBeLessThanOrEqual(32);
+  });
+});
+
+describe("a full-length jump, now that keyframes exist", () => {
+  it("is inside the NFR-1 budget once the trace has been watched once", () => {
+    const store = new TraceStore();
+    store.load(longTrace(RETAINED_STEPS));
+    store.fastForward();
+    const last = RETAINED_STEPS - 1;
+
+    let best = Infinity;
+    for (let trial = 0; trial <= 4; trial++) {
+      store.seekStep(0);
+      const started = performance.now();
+      store.seekStep(last);
+      const elapsed = performance.now() - started;
+      if (trial > 0) best = Math.min(best, elapsed);
+    }
+
+    expect(best, `${best.toFixed(1)}ms for a full-length forward jump`).toBeLessThan(STEP_BUDGET_MS);
   });
 });
