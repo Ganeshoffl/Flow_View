@@ -63,6 +63,11 @@ Both profiles share one UI, one set of renderers, and one trace format. Only the
 
 ### 5.1 Source input
 - **FR-1** Accept pasted or typed source in an editor with syntax highlighting for all five languages.
+  Met: CodeMirror 6 with the Lezer grammars for Python, JavaScript, Java and C/C++ (one grammar covers
+  both). The code pane shown during playback uses the same grammars directly rather than mounting a
+  second editor, because it is a list of lines with execution state attached and has to stay that way.
+  Checked in `scripts/verify-live.sh` by asking the browser what colour the text actually is — a
+  stylesheet naming token classes a grammar never emits would otherwise pass while showing grey.
 - **FR-2** Detect language from a user selection; offer a best-guess default from the source text.
 - **FR-3** Report syntax and compile errors inline, positioned on the offending line, before any run.
 - **FR-4** Ship a browsable library of runnable examples per language and per concept

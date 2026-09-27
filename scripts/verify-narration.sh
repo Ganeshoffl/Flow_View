@@ -55,7 +55,7 @@ for i in range(n - 1):
 print(values)
 '
 
-ab fill '.fv-editor-area' "$PROGRAM" >/dev/null 2>&1
+ab_set_source "$PROGRAM" || { echo "the editor did not take the program" >&2; exit 1; }
 ab_click 'button.fv-run' || { echo "the run button was not clicked" >&2; exit 1; }
 
 # Wait for the run to finish rather than trusting a fixed sleep.

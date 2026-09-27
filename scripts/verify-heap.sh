@@ -62,13 +62,7 @@ run_program() {
     ab_click_text button "Edit code" || { fail "$label: could not switch back to the editor"; return 1; }
   fi
 
-  ab fill '.fv-editor-area' "$source" >/dev/null 2>&1
-  local got
-  got="$(ab get value '.fv-editor-area' 2>&1 | tail -2 | head -1)"
-  if [ -z "$got" ]; then
-    fail "$label: the editor did not take the program"
-    return 1
-  fi
+  ab_set_source "$source" || { fail "$label: the editor did not take the program"; return 1; }
 
   ab_click 'button.fv-run' || { fail "$label: the run button was not clicked"; return 1; }
 

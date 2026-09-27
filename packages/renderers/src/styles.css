@@ -21,6 +21,24 @@
   --fv-warn: #ffb454;
   --fv-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
   --fv-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  /*
+   * Syntax colours, for the editor and the code pane.
+   *
+   * Kept here rather than inside the editor so both places that show code agree, and so the palette
+   * is one list somebody can change. Hues are drawn from the accents already in use above: nothing
+   * here introduces a colour the rest of the interface does not already speak.
+   *
+   * Contrast against --fv-surface was the constraint. Comments are the only deliberately quiet one,
+   * and they still clear 4.5:1 — a comment nobody can read is a comment the author wrote for nothing.
+   */
+  --fv-syn-keyword: #c792ea;
+  --fv-syn-function: #62a0ff;
+  --fv-syn-type: #5fd39a;
+  --fv-syn-number: #ffb454;
+  --fv-syn-string: #a5d6a7;
+  --fv-syn-comment: #7f89a0;
+  --fv-syn-operator: #b6bed1;
 }
 
 * {
@@ -809,16 +827,6 @@ select {
 }
 
 .fv-stdin-prefill textarea,
-.fv-editor-area {
-  font-family: var(--fv-mono);
-  font-size: 13px;
-  color: var(--fv-text);
-  background: var(--fv-surface);
-  border: 1px solid var(--fv-border);
-  border-radius: 6px;
-  padding: 7px 9px;
-  resize: vertical;
-}
 
 /* The program is waiting on a person, so it reads as a question rather than a stalled screen. */
 .fv-ask {
@@ -875,34 +883,26 @@ select {
   overflow: auto;
 }
 
-.fv-editor-gutter {
-  display: flex;
-  flex-direction: column;
-  padding: 8px 8px 8px 10px;
-  font-family: var(--fv-mono);
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--fv-muted);
-  text-align: right;
-  user-select: none;
+/*
+ * The editor is CodeMirror, which owns its own DOM.
+ *
+ * Only what it cannot know is set here: that it fills the pane, and that its gutter matches the one
+ * the code pane draws. Everything about colour lives in the theme next to the highlight definitions,
+ * so the two are read together.
+ */
+.fv-editor-body > .cm-editor {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+.fv-editor-body .cm-gutters {
   background: var(--fv-surface-2);
   border-right: 1px solid var(--fv-border);
 }
 
-.fv-editor-area {
-  flex: 1;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  line-height: 1.5;
-  padding: 8px 10px;
-  resize: none;
-  outline: none;
-  tab-size: 4;
-}
-
-.fv-editor-area:focus-visible {
-  outline: none;
+/* Focus is shown on the pane rather than as a ring around the text. */
+.fv-editor-body .cm-editor.cm-focused {
   box-shadow: inset 2px 0 0 var(--fv-accent);
 }
 
@@ -1273,4 +1273,68 @@ select {
   background: transparent;
   border-color: var(--fv-border);
   color: var(--fv-muted);
+}
+
+
+
+/* ------------------------------------------------- syntax colours, shared
+ *
+ * Used by the code pane's tokens. The editor sets the same colours through its CodeMirror theme, from
+ * the same variables, so the two views that show code cannot drift apart.
+ *
+ * The class names are Lezer's own, from `classHighlighter`, and the list below is the set the four
+ * grammars actually emit — collected by running them rather than guessed. The first attempt styled
+ * `.tok-function`, which none of them produce: a function name arrives as
+ * `tok-variableName tok-definition`.
+ *
+ * Plain identifiers are deliberately left at --fv-text. Colouring every name would make the pane
+ * louder without making it clearer, and the line being executed is what should draw the eye here.
+ */
+.fv-code-text .tok-keyword,
+.fv-code-text .tok-controlKeyword,
+.fv-code-text .tok-moduleKeyword,
+.fv-code-text .tok-definitionKeyword,
+.fv-code-text .tok-operatorKeyword,
+.fv-code-text .tok-meta {
+  color: var(--fv-syn-keyword);
+}
+
+/* Where something is introduced, which is usually the interesting line. */
+.fv-code-text .tok-definition,
+.fv-code-text .tok-labelName {
+  color: var(--fv-syn-function);
+}
+
+.fv-code-text .tok-typeName,
+.fv-code-text .tok-className,
+.fv-code-text .tok-namespace {
+  color: var(--fv-syn-type);
+}
+
+.fv-code-text .tok-number,
+.fv-code-text .tok-bool,
+.fv-code-text .tok-null {
+  color: var(--fv-syn-number);
+}
+
+.fv-code-text .tok-string,
+.fv-code-text .tok-string2,
+.fv-code-text .tok-regexp {
+  color: var(--fv-syn-string);
+}
+
+.fv-code-text .tok-comment,
+.fv-code-text .tok-lineComment,
+.fv-code-text .tok-blockComment {
+  color: var(--fv-syn-comment);
+}
+
+.fv-code-text .tok-operator,
+.fv-code-text .tok-punctuation {
+  color: var(--fv-syn-operator);
+}
+
+/* The active line already carries its own emphasis; tokens must not fight it for attention. */
+.fv-code-line.is-active .fv-code-text span {
+  filter: brightness(1.12);
 }

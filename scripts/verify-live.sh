@@ -77,6 +77,22 @@ ab_instrument >/dev/null
 ab snapshot >/dev/null 2>&1
 
 echo
+echo "=== FR-1: the editor highlights what you type ==="
+# Counting distinct colours rather than checking for a class name: a stylesheet that defines .tok-keyword
+# and a grammar that never emits it would pass a class-name check while showing grey text. This asks the
+# browser what colour the pixels actually are.
+HIGHLIGHT="$(ab_eval "(() => {
+  const spans = [...document.querySelectorAll('.cm-line span')];
+  const colours = new Set(spans.map((s) => getComputedStyle(s).color));
+  const sample = spans.slice(0, 3).map((s) => JSON.stringify(s.textContent) + '=' + getComputedStyle(s).color);
+  return 'editor=' + !!document.querySelector('.cm-editor') +
+    ' spans=' + spans.length + ' colours=' + colours.size + ' | ' + sample.join(' ');
+})()")"
+echo "  $HIGHLIGHT"
+expect "the editor is CodeMirror"          "editor=true"      "$HIGHLIGHT"
+expect "tokens are actually coloured"      "colours=[3-9]"    "$HIGHLIGHT"
+
+echo
 echo "=== run the starter program ==="
 ab_click 'button.fv-run' || { echo "the run button was not clicked" >&2; exit 1; }
 STATUS="$(await_run)"
@@ -98,6 +114,25 @@ expect "the trace has real length"        "step [0-9]{2,} / [0-9]{2,}" "$RESULT"
 # two. What matters is that the user's own variable is listed holding the list it built.
 expect "the user's variables are shown"   "values.*=list\[5\]"        "$RESULT"
 expect "a loop counter is shown"          "i.*=5"                     "$RESULT"
+
+echo
+echo "=== and the code pane highlights what ran ==="
+# The pane the user actually watches. It is not an editor and must not become one - the active line,
+# the visit counts and the click-to-seek all live in its own markup - so it tokenises with the same
+# grammars and renders spans inside the markup it already had.
+PANE="$(ab_eval "(() => {
+  const spans = [...document.querySelectorAll('.fv-code-text span')];
+  const colours = new Set(spans.map((s) => getComputedStyle(s).color));
+  return 'lines=' + document.querySelectorAll('.fv-code-line').length +
+    ' spans=' + spans.length + ' colours=' + colours.size +
+    ' | text intact: ' + JSON.stringify(
+      document.querySelector('.fv-code-line .fv-code-text')?.textContent);
+})()")"
+echo "  $PANE"
+expect "the code pane colours tokens too"  "colours=[3-9]"    "$PANE"
+# Adding spans must not disturb the text, or every line-based assertion in these gates is reading
+# something different from what the program says.
+expect "the source text is unchanged"      "def fact\(n\):"   "$PANE"
 
 echo
 echo "=== guards reported for the run ==="
@@ -132,9 +167,9 @@ echo "=== a program that reads input ==="
 # Prefilled input is recorded as part of the trace, so the whole run can be scrubbed afterwards
 # without anyone typing.
 ab_click_text button "Edit code" || fail "could not switch back to the editor"
-ab fill '.fv-editor-area' 'name = input("your name? ")
+ab_set_source 'name = input("your name? ")
 print("hello", name)
-' >/dev/null 2>&1
+' || fail "the editor did not take the program"
 ab_click_text button "Input" || fail "could not open the input panel"
 ab fill '.fv-stdin-prefill textarea' 'Ada' >/dev/null 2>&1
 ab_click 'button.fv-run' || fail "the second run was not started"
@@ -158,9 +193,9 @@ echo "=== a program that waits for a person to answer ==="
 # until it did, the question sat in an 8 KB stdout buffer that could not be emptied until the program
 # ended, and the program could not end until the question was answered.
 ab_click_text button "Edit code" || fail "could not switch back to the editor"
-ab fill '.fv-editor-area' 'age = input("how old? ")
+ab_set_source 'age = input("how old? ")
 print("in ten years:", int(age) + 10)
-' >/dev/null 2>&1
+' || fail "the editor did not take the program"
 # Clear the prefill, or there is nothing to wait for. Select-all and delete, the way a person would:
 # filling with an empty string leaves the field looking empty without telling React, and the stale
 # value is still what gets run — which made this check report that the program never asked a question.

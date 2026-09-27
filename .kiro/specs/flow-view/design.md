@@ -234,7 +234,9 @@ rather than failing at run time with a stack trace.
 
 All read the same TraceStore state. None knows what language produced it.
 
-**Code** — CodeMirror 6 in read-only mode during playback. Current line highlighted; executed lines
+**Code** — CodeMirror 6 in the editor. During playback the pane is *not* an editor: it is a list of
+lines carrying visit counts, branch outcomes, the active line and click-to-seek, so it tokenises with
+the same Lezer grammars and renders spans inside its own markup instead. Current line highlighted; executed lines
 shaded by visit count; branch gutter markers showing the condition and which way it went; the source
 text of the deciding expression shown inline at the branch.
 

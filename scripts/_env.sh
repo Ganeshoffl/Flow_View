@@ -154,3 +154,33 @@ ab_errors() {
       ? ': ' + window.__fv.errors.join(' | ') : '');
   })()"
 }
+
+
+# ab_set_source <program text> — replace the editor's contents.
+#
+# The editor is CodeMirror, not a textarea, so `fill` is no use: setting the text of a contenteditable
+# behind CodeMirror's back leaves its own document untouched, and the run would trace whatever was there
+# before. Select-all and insert is what a person does, and it goes through the same input handling.
+#
+# Verifies the result, because a silent no-op here means every assertion afterwards is about the wrong
+# program — which is exactly how a broken gate wasted a day once already.
+ab_set_source() {
+  local source="$1" first
+  ab_click '.fv-editor-area' || { echo "  ab_set_source: could not focus the editor" >&2; return 1; }
+  ab press 'Control+a' >/dev/null 2>&1
+  ab keyboard inserttext "$source" >/dev/null 2>&1
+
+  # CodeMirror renders only the visible lines, so compare the first line rather than the whole text.
+  first="$(printf '%s' "$source" | head -1)"
+  local shown
+  shown="$(ab_eval "(() => document.querySelector('.cm-line')?.textContent ?? '')()")"
+  if [ "$shown" != "$first" ]; then
+    echo "  ab_set_source: editor shows ${shown:-<nothing>}, expected $first" >&2
+    return 1
+  fi
+}
+
+# ab_source — what the editor currently shows, joined with newlines.
+ab_source() {
+  ab_eval "(() => [...document.querySelectorAll('.cm-line')].map((l) => l.textContent).join('\\n'))()"
+}

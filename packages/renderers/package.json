@@ -11,17 +11,26 @@
     },
     "./styles.css": "./src/styles.css"
   },
-  "files": ["dist", "src/styles.css"],
+  "files": [
+    "dist",
+    "src/styles.css"
+  ],
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
+    "@codemirror/lang-cpp": "^6.0.3",
+    "@codemirror/lang-java": "^6.0.2",
+    "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/lang-python": "^6.2.1",
     "@flow-view/inference": "workspace:*",
     "@flow-view/narration": "workspace:*",
     "@flow-view/trace-schema": "workspace:*",
-    "@flow-view/trace-store": "workspace:*"
+    "@flow-view/trace-store": "workspace:*",
+    "@lezer/common": "^1.5.3",
+    "@lezer/highlight": "^1.2.4"
   },
   "peerDependencies": {
     "react": "^18.3.1"

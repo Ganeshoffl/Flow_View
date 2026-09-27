@@ -17,6 +17,7 @@ import type { TraceStore } from "@flow-view/trace-store";
 import { currentLocation } from "@flow-view/trace-store";
 
 import { useTraceVersion } from "./useStore.js";
+import { highlightLines } from "./highlight.js";
 
 export interface CodePaneProps {
   readonly store: TraceStore;
@@ -57,6 +58,13 @@ export function CodePane({ store, source, language, onSelectLine }: CodePaneProp
     activeRef.current?.scrollIntoView({ block: "nearest" });
   }, [activeLine]);
 
+  // Tokens per line. Depends only on the text and the language, not on the playhead, so stepping
+  // through a program does not reparse it.
+  const highlighted = useMemo(
+    () => highlightLines(source.join("\n"), language),
+    [source, language],
+  );
+
   const maxVisits = Math.max(1, ...[...lines.values()].map((l) => l.visits));
 
   return (
@@ -84,7 +92,19 @@ export function CodePane({ store, source, language, onSelectLine }: CodePaneProp
                 {line}
               </span>
               <span className="fv-visits">{info && info.visits > 1 ? `${info.visits}×` : ""}</span>
-              <code className="fv-code-text">{text || " "}</code>
+              <code className="fv-code-text">
+                {text
+                  ? (highlighted[index] ?? [{ text, cls: "" }]).map((token, at) =>
+                      token.cls ? (
+                        <span key={at} className={token.cls}>
+                          {token.text}
+                        </span>
+                      ) : (
+                        token.text
+                      ),
+                    )
+                  : " "}
+              </code>
               {info?.branch ? (
                 <span
                   className={`fv-branch is-${info.branch.outcome}`}
