@@ -160,6 +160,7 @@ class Emitter:
         "_stop_reason",
         "_notes_sent",
         "_last_flush",
+        "_idle_ms",
     )
 
     #: How long a finished event may sit in the buffer before it is pushed out, in milliseconds.
@@ -213,11 +214,24 @@ class Emitter:
         self._stop_reason: str | None = None
         self._notes_sent: set[str] = set()
         self._last_flush = self._started
+        self._idle_ms = 0.0
 
     # -- timing ------------------------------------------------------------
 
     def elapsed_ms(self) -> float:
-        return (self._clock() - self._started) * 1000.0
+        """How long the *program* has been running.
+
+        Time spent blocked waiting for a person to type an answer is not the program's time, and
+        charging it to the program was wrong twice over: the wall-clock budget killed runs for
+        "timeout" when the only thing that had taken 30 seconds was somebody reading the question, and
+        the elapsed clock in the UI reported thinking time as execution time.
+        """
+        return (self._clock() - self._started) * 1000.0 - self._idle_ms
+
+    def discount_idle(self, ms: float) -> None:
+        """Exclude a stretch of waiting on a human from the program's elapsed time."""
+        if ms > 0:
+            self._idle_ms += ms
 
     @property
     def stopped(self) -> bool:

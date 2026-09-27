@@ -997,6 +997,10 @@ class _InputBridge:
         asked_at = clock()
         supplied = self._stdin.readline()
         waited_ms = round(clock() - asked_at, 3)
+        # The program was not running while it sat here, so this stretch is not charged to it. Without
+        # this, a run was killed for exceeding its wall-clock budget when the only thing that had taken
+        # thirty seconds was a person reading the question.
+        tracer.emitter.discount_idle(waited_ms)
         if supplied == "":
             # No more input. Raising EOFError is what real `input` does, so the program behaves as it
             # would outside flow_view.

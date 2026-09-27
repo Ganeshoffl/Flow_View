@@ -348,6 +348,49 @@ class TestAProgramThatStopsToAskAQuestion:
 
         assert within(30, wait_for_something) > 0
 
+    def test_a_slow_answer_does_not_end_the_run_for_being_unresponsive(self, client: Any) -> None:
+        """Silence while waiting for a person is not a program that has hung.
+
+        The read deadline is the execution budget plus five seconds, and it used to apply even while
+        the program sat on a question. Take longer than that to answer and the run was killed with
+        "The program stopped responding", which blamed the program for the time you spent reading.
+        """
+        import time
+
+        session = client.post("/api/session").json()
+        budget_ms = 100  # so the old deadline would have been ~5.1s
+
+        def slow_conversation() -> dict[str, Any]:
+            with client.websocket_connect(f"/api/session/{session['id']}/ws") as socket:
+                socket.send_json(
+                    {
+                        "type": "run",
+                        "language": "python",
+                        "source": 'n = input("n? ")\nprint("got", n)\n',
+                        "limits": {"wall_ms": budget_ms},
+                    }
+                )
+                for _ in range(200):
+                    message = socket.receive_json()
+                    if message.get("type") != "events":
+                        continue
+                    if any(e["t"] == "stdin_request" for e in message["events"]):
+                        break
+                # Longer than the old deadline, and far longer than the execution budget.
+                time.sleep(7)
+                socket.send_json({"type": "stdin", "text": "4"})
+                return collect(socket)
+
+        result = within(40, slow_conversation)
+        printed = "".join(e["text"] for e in result["events"] if e["t"] == "stdout")
+        assert "got 4" in printed
+        complaints = [
+            e["text"]
+            for e in result["events"]
+            if e["t"] == "note" and "stopped responding" in e.get("text", "")
+        ]
+        assert not complaints, f"the run was blamed for waiting: {complaints}"
+
     def test_prefilled_input_without_a_trailing_newline_still_completes(self, client: Any) -> None:
         # The input box is a textarea. A user who types one value and presses Run leaves no newline,
         # and `input()` reads a *line*, so the run used to hang forever on a read that could not

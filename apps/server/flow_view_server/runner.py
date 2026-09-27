@@ -38,6 +38,12 @@ __all__ = ["RunLimits", "RunRequest", "Runner", "platform_guards"]
 
 ADAPTERS = Path(__file__).resolve().parents[3] / "adapters" / "python"
 
+#: How long a program may sit on an unanswered question before the run is given up on, in seconds.
+#:
+#: Generous, because the alternative is ending a run while its user is still reading. Finite, because
+#: a closed tab must not leave a traced program parked on a read that will never be answered.
+UNANSWERED_DEADLINE = 15 * 60
+
 try:  # POSIX only; absent on Windows.
     import resource
 except ImportError:  # pragma: no cover - platform dependent
@@ -225,15 +231,29 @@ class Runner:
 
         wall_deadline = self.request.limits.wall_ms / 1000 + 5
         stream = self._process.stdout
+        # Silence means something has gone wrong — unless the program is waiting for input, in which
+        # case silence is exactly what it should be doing. Applying the execution deadline then would
+        # end a run for being patient, and blame the program for the time a person spent thinking.
+        #
+        # It is still bounded, just far more loosely, so an abandoned tab cannot leave a traced program
+        # parked on a read forever.
+        awaiting_input = False
 
         while True:
             try:
-                line = await asyncio.wait_for(stream.readline(), timeout=wall_deadline)
+                line = await asyncio.wait_for(
+                    stream.readline(),
+                    timeout=UNANSWERED_DEADLINE if awaiting_input else wall_deadline,
+                )
             except asyncio.TimeoutError:
                 yield {
                     "t": "note",
                     "level": "warn",
-                    "text": "The program stopped responding and was ended.",
+                    "text": (
+                        "Nobody answered, so the run was ended."
+                        if awaiting_input
+                        else "The program stopped responding and was ended."
+                    ),
                 }
                 await self.stop()
                 return
@@ -259,7 +279,11 @@ class Runner:
                     "text": "An unreadable line arrived from the tracer and was skipped.",
                 }
                 continue
-            if event.get("t") == "stdin_response":
+            kind = event.get("t")
+            if kind == "stdin_request":
+                awaiting_input = True
+            elif kind == "stdin_response":
+                awaiting_input = False
                 self._label_stdin_source(event)
             yield event
 

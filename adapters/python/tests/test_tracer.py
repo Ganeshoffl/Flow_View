@@ -712,3 +712,61 @@ class TestWhereAnAnswerCameFrom:
         answered = [e for e in traced.events if e["t"] == "stdin_response"]
         assert answered[0]["source"] == "interactive"
         assert answered[0]["waited_ms"] >= 250
+
+
+
+class TestWaitingForAPersonIsNotTheProgramRunning:
+    """The wall-clock budget must not be spent by somebody reading the question.
+
+    `elapsed_ms` was raw wall clock, and the budget was checked against it, so a run was killed for
+    "timeout" when the only thing that had taken thirty seconds was a person deciding what to type.
+    The same number drives the elapsed clock in the UI, which was therefore reporting thinking time as
+    execution time.
+    """
+
+    def test_a_slow_answer_does_not_exhaust_the_budget(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import io
+        import time
+
+        class SlowStdin(io.StringIO):
+            def readline(self, *args: Any) -> str:  # type: ignore[override]
+                time.sleep(0.4)
+                return super().readline(*args)
+
+        monkeypatch.setattr(sys, "stdin", SlowStdin("7\n"))
+        # A budget smaller than the wait. The program itself does almost nothing, so the only way to
+        # exceed this is to charge it for the waiting.
+        traced = Traced("n = input()\nm = int(n) * 2\nprint(m)\n", limits=Limits(wall_ms=200))
+
+        assert traced.status == "ok", f"the run was cut short as {traced.status!r}"
+        printed = "".join(e["text"] for e in traced.events if e["t"] == "stdout")
+        assert "14" in printed
+
+    def test_the_elapsed_clock_excludes_the_wait(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import io
+        import time
+
+        class SlowStdin(io.StringIO):
+            def readline(self, *args: Any) -> str:  # type: ignore[override]
+                time.sleep(0.4)
+                return super().readline(*args)
+
+        monkeypatch.setattr(sys, "stdin", SlowStdin("1\n"))
+        traced = Traced("x = input()\ny = 1\n")
+
+        end = [e for e in traced.events if e["t"] == "run_end"][0]
+        assert end["duration_ms"] < 400, (
+            f"the clock read {end['duration_ms']}ms, which is mostly somebody thinking"
+        )
+        # The wait itself is not lost - it is recorded on the answer.
+        answered = [e for e in traced.events if e["t"] == "stdin_response"][0]
+        assert answered["waited_ms"] >= 400
+
+    def test_a_genuinely_slow_program_is_still_stopped(self) -> None:
+        # The discount must apply only to waiting on input, or the budget stops meaning anything.
+        traced = Traced(
+            "import time\nfor i in range(50):\n    time.sleep(0.02)\n", limits=Limits(wall_ms=100)
+        )
+        assert traced.status == "timeout"
