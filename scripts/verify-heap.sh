@@ -195,6 +195,62 @@ done
 ab resize 1280 800 >/dev/null 2>&1
 
 echo
+echo "=== any pane can take the whole grid ==="
+# The grid gives every pane a share, which is wrong the moment you want to read one of them. A twelve-line
+# program showed eight lines; a dozen-node tree got a box four lines high.
+run_program "${TREE}r = T(8)
+r.left = T(3)
+r.right = T(10)
+r.left.left = T(1)
+r.left.right = T(6)
+" "expanding" || true
+
+CONTROLS="$(ab_eval "(() => {
+  const areas = [...document.querySelectorAll('.fv-area')];
+  return areas.length + ' areas, ' + areas.filter((a) => a.querySelector('.fv-expand')).length + ' controls';
+})()")"
+echo "  $CONTROLS"
+case "$CONTROLS" in
+  "7 areas, 7 controls") ok_line=1; printf '  ok    %-22s every pane has one\n' "expand control" ;;
+  *) fail "not every pane has an expand control: $CONTROLS" ;;
+esac
+
+SMALL="$(ab_eval "(() => Math.round(document.querySelector('.fv-area.is-heap').getBoundingClientRect().height))()")"
+ab_click '.fv-area.is-heap .fv-expand' || fail "the heap's expand control was not clicked"
+sleep 1
+BIG="$(ab_eval "(() => {
+  const h = document.querySelector('.fv-area.is-heap').getBoundingClientRect();
+  const visible = [...document.querySelectorAll('.fv-area')].filter((a) => a.getBoundingClientRect().height > 0).length;
+  const run = document.querySelector('button.fv-run').getBoundingClientRect();
+  const d = document.documentElement;
+  return Math.round(h.height) + '|' + visible + '|' + (run.top >= 0 && run.bottom <= window.innerHeight) +
+    '|' + (d.scrollHeight > d.clientHeight + 1);
+})()")"
+IFS='|' read -r tall visible runVisible scrolls <<<"$BIG"
+echo "  heap height ${SMALL}px -> ${tall}px, visible panes=$visible, run reachable=$runVisible, page scrolls=$scrolls"
+[ "$tall" -gt "$SMALL" ] && printf '  ok    %-22s %spx -> %spx\n' "expanding grows it" "$SMALL" "$tall" \
+  || fail "expanding did not make the heap bigger"
+[ "$visible" = "1" ] && printf '  ok    %-22s the others step aside\n' "one pane at a time" \
+  || fail "expected 1 visible pane, got $visible"
+# The whole point of expanding the heap is to keep stepping while you look at it.
+[ "$runVisible" = "true" ] && [ "$scrolls" = "false" ] \
+  && printf '  ok    %-22s controls stay reachable\n' "still usable" \
+  || fail "expanding pushed the controls off screen (run=$runVisible scrolls=$scrolls)"
+
+STEPPED_FROM="$(ab_eval "(() => document.querySelector('.fv-position')?.textContent?.trim())()")"
+ab press 'ArrowLeft' >/dev/null 2>&1
+STEPPED_TO="$(ab_eval "(() => document.querySelector('.fv-position')?.textContent?.trim())()")"
+[ "$STEPPED_FROM" != "$STEPPED_TO" ] \
+  && printf '  ok    %-22s %s -> %s while expanded\n' "stepping works" "$STEPPED_FROM" "$STEPPED_TO" \
+  || fail "could not step while a pane was expanded"
+
+ab press 'Escape' >/dev/null 2>&1
+sleep 1
+BACK="$(ab_eval "(() => [...document.querySelectorAll('.fv-area')].filter((a) => a.getBoundingClientRect().height > 0).length)()")"
+[ "$BACK" = "7" ] && printf '  ok    %-22s Escape restores all 7\n' "collapsing" \
+  || fail "Escape did not restore the grid (visible=$BACK)"
+
+echo
 echo "=== the raw view is always available ==="
 run_program "${TREE}r = T(5)
 r.left = T(3)

@@ -1338,3 +1338,84 @@ select {
 .fv-code-line.is-active .fv-code-text span {
   filter: brightness(1.12);
 }
+
+
+
+/* ------------------------------------------------- expanding one pane
+ *
+ * The grid gives every pane a share, which is right for watching them move together and wrong for
+ * reading one of them. A forty-line program arrived showing eight lines; a dozen-node tree was drawn into
+ * a box four lines high.
+ *
+ * Expanding replaces the grid with a single cell rather than spanning the expanded pane across the
+ * existing tracks. Spanning would keep the row minimums - about 604px of them - so the pane would be
+ * 604px tall inside a scrolling container instead of simply filling the space.
+ */
+.fv-area {
+  position: relative;
+}
+
+.fv-expand {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  z-index: 2;
+  padding: 1px 6px 3px;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--fv-muted);
+  background: transparent;
+  border-color: transparent;
+}
+
+/* Visible but quiet until wanted. Never hover-only: a control you cannot find is not a control, and
+ * that rules out discovering it by accident on a touch screen too. */
+.fv-expand:hover:not(:disabled),
+.fv-expand:focus-visible {
+  color: var(--fv-text);
+  background: var(--fv-surface-2);
+  border-color: var(--fv-border);
+}
+
+.fv-area.is-expanded .fv-expand {
+  color: var(--fv-accent);
+}
+
+/* Keep the button clear of the pane's own title text. */
+.fv-area .fv-pane-title {
+  padding-right: 28px;
+}
+
+.fv-main.has-expanded {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.fv-main.has-expanded .fv-area {
+  display: none;
+}
+
+.fv-main.has-expanded .fv-area.is-expanded {
+  display: flex;
+  grid-area: 1 / 1 / -1 / -1;
+  min-height: 0;
+}
+
+/* The side cell holds two panes stacked; expanded, they share the height evenly rather than keeping the
+ * proportions that made sense when the cell was a third of a column. */
+.fv-main.has-expanded .fv-area.is-side > * {
+  flex: 1;
+}
+
+@media (max-width: 860px) {
+  /* One column already gives every pane the full width, and the document scrolls. Taking over the grid
+   * there would hide the panes above and below for no gain. */
+  .fv-expand {
+    display: none;
+  }
+
+  .fv-main.has-expanded .fv-area {
+    display: flex;
+  }
+}
