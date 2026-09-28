@@ -25,6 +25,7 @@ import {
 } from "@flow-view/renderers";
 import { TraceStore } from "@flow-view/trace-store";
 
+import { Area, useExpandedArea } from "./Area.js";
 import { Editor } from "./Editor.js";
 import { RunControls } from "./RunControls.js";
 import { useLiveRun } from "./useLiveRun.js";
@@ -93,6 +94,7 @@ interface ModeProps {
 
 function LiveMode({ highlighted, onHighlight }: ModeProps) {
   const live = useLiveRun();
+  const area = useExpandedArea();
   const [source, setSource] = useState(STARTER);
   const [stdin, setStdin] = useState("");
 
@@ -134,8 +136,8 @@ function LiveMode({ highlighted, onHighlight }: ModeProps) {
         onToggleEditing={() => setEditing((value) => !value)}
       />
 
-      <main className="fv-main">
-        <div className="fv-area is-code">
+      <main className={area.mainClass}>
+        <Area name="code" area={area}>
           {showingCode ? (
             <CodePane store={live.store} source={tracedSource} language="python" />
           ) : (
@@ -147,36 +149,36 @@ function LiveMode({ highlighted, onHighlight }: ModeProps) {
               disabled={live.status === "running"}
             />
           )}
-        </div>
-        <div className="fv-area is-stack">
+        </Area>
+        <Area name="stack" area={area}>
           <StackPane store={live.store} language="python" />
-        </div>
-        <div className="fv-area is-vars">
+        </Area>
+        <Area name="vars" area={area}>
           <VariablesPane
             store={live.store}
             language="python"
             highlightedObject={highlighted}
             onHighlightObject={onHighlight}
           />
-        </div>
-        <div className="fv-area is-heap">
+        </Area>
+        <Area name="heap" area={area}>
           <HeapPane
             store={live.store}
             language="python"
             highlightedObject={highlighted}
             onHighlightObject={onHighlight}
           />
-        </div>
-        <div className="fv-area is-narration">
+        </Area>
+        <Area name="narration" area={area}>
           <NarrationPane store={live.store} language={"python"} />
-        </div>
-        <div className="fv-area is-side">
+        </Area>
+        <Area name="side" area={area}>
           <OutputPane store={live.store} />
           <MetricsPane store={live.store} />
-        </div>
-        <div className="fv-area is-timeline">
+        </Area>
+        <Area name="timeline" area={area}>
           <TimelinePane store={live.store} language={"python"} />
-        </div>
+        </Area>
       </main>
     </>
   );
@@ -194,6 +196,7 @@ function sourceOfRun(store: TraceStore, fallback: string): string[] {
 }
 
 function ExampleMode({ highlighted, onHighlight }: ModeProps) {
+  const area = useExpandedArea();
   const [fixtureId, setFixtureId] = useState<string>(FIXTURES[0]?.id ?? "assignment");
   const fixture = getFixture(fixtureId);
 
@@ -242,44 +245,44 @@ function ExampleMode({ highlighted, onHighlight }: ModeProps) {
         <PlaybackBar store={store} />
       </div>
 
-      <main className="fv-main">
-        <div className="fv-area is-code">
+      <main className={area.mainClass}>
+        <Area name="code" area={area}>
           <CodePane
             store={store}
             source={fixture.source}
             language={fixture.language}
             onSelectLine={seekToLine}
           />
-        </div>
-        <div className="fv-area is-stack">
+        </Area>
+        <Area name="stack" area={area}>
           <StackPane store={store} language={fixture.language} />
-        </div>
-        <div className="fv-area is-vars">
+        </Area>
+        <Area name="vars" area={area}>
           <VariablesPane
             store={store}
             language={fixture.language}
             highlightedObject={highlighted}
             onHighlightObject={onHighlight}
           />
-        </div>
-        <div className="fv-area is-heap">
+        </Area>
+        <Area name="heap" area={area}>
           <HeapPane
             store={store}
             language={fixture.language}
             highlightedObject={highlighted}
             onHighlightObject={onHighlight}
           />
-        </div>
-        <div className="fv-area is-narration">
+        </Area>
+        <Area name="narration" area={area}>
           <NarrationPane store={store} language={fixture.language} />
-        </div>
-        <div className="fv-area is-side">
+        </Area>
+        <Area name="side" area={area}>
           <OutputPane store={store} />
           <MetricsPane store={store} />
-        </div>
-        <div className="fv-area is-timeline">
+        </Area>
+        <Area name="timeline" area={area}>
           <TimelinePane store={store} language={fixture.language} />
-        </div>
+        </Area>
       </main>
     </>
   );
