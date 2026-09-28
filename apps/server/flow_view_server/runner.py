@@ -24,6 +24,7 @@ than implying protection it does not have.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import os
 import shutil
@@ -36,7 +37,24 @@ from typing import Any, AsyncIterator, Callable
 
 __all__ = ["RunLimits", "RunRequest", "Runner", "platform_guards"]
 
-ADAPTERS = Path(__file__).resolve().parents[3] / "adapters" / "python"
+def _adapters_root() -> Path:
+    """Where the Python tracer lives.
+
+    Installed, it is a top-level package beside this one; in a checkout it is under `adapters/python`.
+    The old answer was `parents[3]`, which is the repo root only in a checkout — so an installed
+    flow_view looked for the tracer in whatever directory happened to sit three levels above
+    site-packages, found nothing, and every run failed.
+
+    Resolved through the import system rather than by guessing, because that is the one thing that
+    knows where a package ended up.
+    """
+    spec = importlib.util.find_spec("flow_view_tracer")
+    if spec is not None and spec.origin:
+        return Path(spec.origin).resolve().parent.parent
+    return Path(__file__).resolve().parents[3] / "adapters" / "python"
+
+
+ADAPTERS = _adapters_root()
 
 #: How long a program may sit on an unanswered question before the run is given up on, in seconds.
 #:

@@ -31,11 +31,40 @@ flow_view makes them visible.
 - **Honest.** If a value cannot be read, it says so. If a guess about a data structure is uncertain,
   it says so, shows its evidence, and lets you correct it.
 
-## Two ways to run it
+## Install and run it today
+
+```sh
+pip install 'flow-view[server]'
+flow-view
+```
+
+That serves the interface and the API from `127.0.0.1:7474` and opens a browser. No network is
+used after installation, and nothing is sent anywhere.
+
+The `[server]` extra is not optional in practice — it carries FastAPI, uvicorn and a WebSocket
+implementation, and every run streams over a WebSocket. The core package stays dependency-free so the
+tracer can run unchanged inside Pyodide when the Lite profile lands.
+
+**Do not bind it to a public interface.** flow_view runs the code you paste. `--host` exists for
+running it on a machine you reach over a trusted network, and the guards it applies (no sockets, writes
+confined to the run directory, no subprocesses, rlimits) are there to catch accidents, not to contain
+someone attacking you. Exposed publicly it is remote code execution with a friendly interface.
+
+### What actually works right now
+
+| | |
+|---|---|
+| Python | traced, stepped, explained |
+| JavaScript, C, C++, Java | not yet — the adapters are unwritten |
+| Lite profile (no install, in-browser) | not yet — needs Pyodide in a worker |
+
+The table below is the plan, not the present.
+
+## Two ways to run it, eventually
 
 |  | **Lite** | **Full** |
 |---|---|---|
-| Install | none — open it in a browser | `pip install flow-view` |
+| Install | none — open it in a browser | `pip install 'flow-view[server]'` |
 | Languages | Python, JavaScript | Python, JavaScript, C, C++, Java |
 | Backend | none | local server on `127.0.0.1` |
 | Offline | yes (PWA) | yes |

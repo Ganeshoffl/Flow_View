@@ -109,7 +109,11 @@ heading "8. the tests themselves"
 # repeat runs that re-check the two former flakes; run the script directly for those.
 run "every fix has a test that fails without it" bash scripts/verify-fixes.sh --quick
 
-heading "9. repository"
+heading "9. the wheel"
+# A checkout hides almost every way an install can be broken. Bounded because it builds and installs.
+run "an installed flow_view works" timeout 420 bash scripts/verify-install.sh
+
+heading "10. repository"
 run "working tree is clean" bash -c '[ -z "$(git status --porcelain)" ]'
 # Compare against whatever this branch tracks, not against main. Hardcoding origin/main meant the
 # check could only ever pass on one branch, and quietly failed on every other for the wrong reason.
