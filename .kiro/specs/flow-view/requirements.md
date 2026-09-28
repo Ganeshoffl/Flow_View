@@ -63,6 +63,11 @@ Both profiles share one UI, one set of renderers, and one trace format. Only the
 
 ### 5.1 Source input
 - **FR-1** Accept pasted or typed source in an editor with syntax highlighting for all five languages.
+  Met: CodeMirror 6 with the Lezer grammars for Python, JavaScript, Java and C/C++ (one grammar covers
+  both). The code pane shown during playback uses the same grammars directly rather than mounting a
+  second editor, because it is a list of lines with execution state attached and has to stay that way.
+  Checked in `scripts/verify-live.sh` by asking the browser what colour the text actually is — a
+  stylesheet naming token classes a grammar never emits would otherwise pass while showing grey.
 - **FR-2** Detect language from a user selection; offer a best-guess default from the source text.
 - **FR-3** Report syntax and compile errors inline, positioned on the offending line, before any run.
 - **FR-4** Ship a browsable library of runnable examples per language and per concept
@@ -134,6 +139,19 @@ Both profiles share one UI, one set of renderers, and one trace format. Only the
 ### Performance
 - **NFR-1** Step and back-step in the UI respond in under 50 ms at the 95th percentile for traces up to
   100,000 retained steps.
+
+  Measured at 100,000 steps: stepping either way is ~0.002 ms and a 1000-step seek is under 0.6 ms, so
+  stepping as stated is met with four orders of magnitude to spare.
+
+  A *full-length* jump — clicking the far end of the playback bar — used to cost 43 ms on a minimal
+  trace and 111 ms at four events per step. Seek keyframes bring that to **0.6–0.9 ms** for any trace
+  that has been played through once, which a live run always has, because the playhead follows the
+  streaming edge.
+
+  Not met for a saved trace loaded and jumped without ever being played: 43 ms light, 163 ms dense.
+  Keyframes cannot help there — they are only captured moving forward, since the undo journal behind one
+  must have been built on the way past it. That needs the `snapshot` events the schema defines and the
+  adapter does not yet emit.
 - **NFR-2** First trace events reach the UI within 500 ms of pressing run for a trivial program.
 - **NFR-3** Per-step tracing cost stays within 100µs, and must not grow with the size of the
   program's heap.

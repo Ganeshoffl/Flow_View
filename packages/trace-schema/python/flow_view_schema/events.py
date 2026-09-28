@@ -79,7 +79,9 @@ FreeVia = Literal["free", "delete", "delete_array", "scope_exit"]
 FREEVIA_VALUES: tuple[FreeVia, ...] = ("free", "delete", "delete_array", "scope_exit",)
 
 StdinSource = Literal["interactive", "prefilled"]
-"""Whether input came from a human at run time or was supplied up front."""
+"""Whether input came from a human at run time or was supplied up front. Measured from how
+long the read blocked, not assumed.
+"""
 STDINSOURCE_VALUES: tuple[StdinSource, ...] = ("interactive", "prefilled",)
 
 MetricName = Literal["comparison", "swap", "assignment", "call", "iteration", "allocation", "read", "write"]
@@ -625,7 +627,8 @@ class StdinRequestEvent(_StdinRequestEvent, total=False):
 
 class _StdinResponseEvent(_EventBase):
     """`stdin_response` — Input that was supplied. Recorded so replay is deterministic
-    without a human.
+    without a human. waited_ms is how long the program actually sat on the read, and is
+    what source is derived from.
     """
     t: Literal["stdin_response"]
     text: str
@@ -638,6 +641,7 @@ class StdinResponseEvent(_StdinResponseEvent, total=False):
     line: int
     path: str
     ms: float
+    waited_ms: float
 
 class _ExceptionRaiseEvent(_EventBase):
     """`exception_raise` — An exception was raised."""
@@ -750,6 +754,8 @@ class CollapseEvent(_CollapseEvent, total=False):
     line: int
     path: str
     ms: float
+    from_iter: int
+    to_iter: int
     metrics: dict[str, int]
 
 class _NoteEvent(_EventBase):
@@ -1191,6 +1197,7 @@ EVENT_SPEC: dict[str, dict[str, dict[str, object]]] = {
         "ms": {"type": "float", "required": False},
         "text": {"type": "string", "required": True},
         "source": {"type": "enum:StdinSource", "required": True},
+        "waited_ms": {"type": "float", "required": False},
     },
     "exception_raise": {
         "seq": {"type": "int", "required": True},
@@ -1274,6 +1281,8 @@ EVENT_SPEC: dict[str, dict[str, dict[str, object]]] = {
         "from_seq": {"type": "int", "required": True},
         "to_seq": {"type": "int", "required": True},
         "iterations": {"type": "int", "required": True},
+        "from_iter": {"type": "int", "required": False},
+        "to_iter": {"type": "int", "required": False},
         "effects": {"type": "array:CollapseEffect", "required": True},
         "metrics": {"type": "map:int", "required": False},
     },

@@ -33,6 +33,13 @@ needs_monitoring = pytest.mark.skipif(
 )
 
 
+def _by_func(frames: list[dict[str, object]]) -> dict[str, int]:
+    """Frame counts per function name, for a failure message that explains itself."""
+    import collections
+
+    return dict(collections.Counter(str(f["func"]) for f in frames))
+
+
 class TestDefault:
     def test_settrace_is_the_default_on_every_version(self) -> None:
         # Not a per-version choice. The same program must trace the same way on 3.10 and on 3.14, or a
@@ -88,7 +95,19 @@ class TestMonitoringCorrectness:
         library_monitoring = [
             e for e in monitoring if e["t"] == "frame_push" and e.get("kind") == "library"
         ]
-        assert len(library_monitoring) == len(library_settrace)
+        # Report *which* frames differ, not just how many.
+        #
+        # This has been seen to fail with 90 against 60, intermittently, and only when the whole suite
+        # runs in one process. It could not be pinned down, because any attempt to observe it made it
+        # stop happening: tracing the same program twice immediately beforehand was enough to mask it.
+        # Since it cannot be reproduced on demand, the next occurrence has to carry its own evidence.
+        assert len(library_monitoring) == len(library_settrace), (
+            "the backends disagree about which library frames a run enters.\n"
+            f"  settrace   {len(library_settrace):4}: {_by_func(library_settrace)}\n"
+            f"  monitoring {len(library_monitoring):4}: {_by_func(library_monitoring)}\n"
+            "If the difference is extra _iterencode frames, json took its Python encoding path in one "
+            "run and its C path in the other, and the backends are not the thing that differs."
+        )
         assert len(library_monitoring) >= 20, "every call must be reported, not just the first"
 
     def test_no_line_steps_are_recorded_inside_library_code(self) -> None:
@@ -118,3 +137,146 @@ class TestMonitoringCorrectness:
         # events. The mapping is explicit rather than assumed.
         source = "def g():\n    yield 1\n    yield 2\nvalues = list(g())\n"
         assert trace(source, "settrace") == trace(source, "monitoring")
+
+
+
+class TestTheGarbageCollectorIsNotTheProgram:
+    """Finalizers belong to the interpreter, not to the program being traced.
+
+    This is the bug behind an intermittent 90-against-60 disagreement that was blamed on the backends
+    for two phases. `sys.monitoring` is global, and a frame is admitted when its caller is already
+    known - so a `__del__` firing mid-statement, on an object the program had never touched, was
+    reported as a call the program made, along with everything it called. `settrace` spends long enough
+    inside its own callbacks that collection usually happened *there*, where tracing is suppressed, so
+    it mostly did not see them. Hence a disagreement that came and went with unrelated garbage.
+
+    Reproduced here on purpose rather than opportunistically. An earlier version of these tests dropped
+    garbage and called `gc.collect()` before tracing, which collected it before the traced run began:
+    the tests passed with the fix reverted, which makes them worse than no tests. The program below
+    forces a synchronous collection of a cycle whose class lives outside the user's file, so the
+    finalizer is guaranteed to run inside the traced region.
+    """
+
+    @pytest.fixture
+    def foreign_library(self, tmp_path: Any) -> str:
+        """A module that is not the user's file, with a finalizer that calls something."""
+        module = tmp_path / "pretend_library.py"
+        module.write_text(
+            "class Handle:\n"
+            "    def __del__(self):\n"
+            "        self.shut()\n"
+            "    def shut(self):\n"
+            "        return True\n"
+            "\n"
+            "def make_cycle():\n"
+            "    a, b = Handle(), Handle()\n"
+            "    a.peer, b.peer = b, a\n",
+            encoding="utf-8",
+        )
+        sys.path.insert(0, str(tmp_path))
+        try:
+            yield str(tmp_path)
+        finally:
+            sys.path.remove(str(tmp_path))
+            sys.modules.pop("pretend_library", None)
+
+    SOURCE = (
+        "import gc\n"
+        "import pretend_library\n"
+        "for i in range(5):\n"
+        "    pretend_library.make_cycle()\n"
+        "gc.collect()\n"
+        "done = 1\n"
+    )
+
+    @pytest.mark.parametrize("backend", ["settrace", "monitoring"])
+    def test_a_foreign_finalizer_is_not_the_programs_own_work(
+        self, backend: str, foreign_library: str
+    ) -> None:
+        if backend == "monitoring" and not monitoring_available():
+            pytest.skip("sys.monitoring needs Python 3.12+")
+        names = [e["func"] for e in trace(self.SOURCE, backend) if e["t"] == "frame_push"]
+        assert "__del__" not in names, f"{backend} reported a finalizer as a call the program made"
+        # And everything underneath it. Refusing the finalizer alone left `shut` behind, because the
+        # two backends do not agree on how a frame becomes known.
+        assert "shut" not in names, f"{backend} reported a finalizer's callee"
+
+    @needs_monitoring
+    def test_the_backends_agree_about_it(self, foreign_library: str) -> None:
+        def finalizer_frames(backend: str) -> dict[str, int]:
+            events = trace(self.SOURCE, backend)
+            return _by_func(
+                [
+                    e
+                    for e in events
+                    if e["t"] == "frame_push" and e["func"] in ("__del__", "shut")
+                ]
+            )
+
+        assert finalizer_frames("monitoring") == finalizer_frames("settrace") == {}
+
+    def test_a_finalizer_the_user_wrote_is_still_their_code(self) -> None:
+        # The fix refuses *foreign* finalizers only. A `__del__` in the user's own file is theirs, and
+        # the surprise of when it runs is worth showing rather than hiding.
+        from flow_view_tracer.tracer import Tracer
+
+        tracer = Tracer.__new__(Tracer)
+        tracer.path = "/somewhere/main.py"
+        tracer._frames = {}
+
+        class Code:
+            co_name = "__del__"
+            co_filename = "/somewhere/main.py"
+
+        class Frame:
+            f_code = Code()
+            f_back = None
+
+        assert not Tracer._is_foreign_finalizer(tracer, Frame()), "the user's own __del__ was refused"
+        Code.co_filename = "/usr/lib/python3.12/codecs.py"
+        assert Tracer._is_foreign_finalizer(tracer, Frame()), "a library __del__ was allowed through"
+
+
+class TestACallbackReachedThroughALibrary:
+    """The user's own function, called by a library, from a frame that is not announced.
+
+    Library internals are no longer announced - `json.dumps` is one frame, not three - which means the
+    frames between the call and a callback are invisible to the tracer. `in_scope` therefore has to walk
+    the stack rather than ask about the immediate caller, or the callback is judged out of scope and
+    dropped.
+
+    `sorted(key=...)` does not exercise this: `sorted` is a C function with no Python frame, so the
+    callback's caller is the module frame and the immediate check is enough. `json.dumps(default=...)`
+    does, because the call comes from `json.encoder` in Python. Checking with the easy case only would
+    have passed with the walk removed - and did.
+    """
+
+    SOURCE = (
+        "import json\n"
+        "\n"
+        "def handler(o):\n"
+        "    return 'seen'\n"
+        "\n"
+        "s = json.dumps({'k': set()}, default=handler)\n"
+    )
+
+    @pytest.mark.parametrize("backend", ["settrace", "monitoring"])
+    def test_the_callback_is_traced(self, backend: str) -> None:
+        if backend == "monitoring" and not monitoring_available():
+            pytest.skip("sys.monitoring needs Python 3.12+")
+        events = trace(self.SOURCE, backend)
+        user = [e["func"] for e in events if e["t"] == "frame_push" and e.get("kind") == "user"]
+        assert "handler" in user, (
+            f"{backend} dropped the callback the library called; frames were {user}"
+        )
+
+    @needs_monitoring
+    def test_both_backends_see_it(self) -> None:
+        def user_frames(backend: str) -> list[str]:
+            return [
+                e["func"]
+                for e in trace(self.SOURCE, backend)
+                if e["t"] == "frame_push" and e.get("kind") == "user"
+            ]
+
+        assert user_frames("monitoring") == user_frames("settrace")

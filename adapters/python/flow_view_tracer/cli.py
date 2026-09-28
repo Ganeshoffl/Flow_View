@@ -37,6 +37,31 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="read the whole reachable heap each step; correct at any size, affordable only when small",
     )
+    # Loop folding. On by default: a long loop is the ordinary case that makes a trace unusable, and
+    # `--no-collapse` is there for anyone who needs the raw article.
+    parser.add_argument(
+        "--no-collapse",
+        action="store_true",
+        help="record every iteration of every loop, however many there are",
+    )
+    parser.add_argument(
+        "--collapse-keep",
+        type=int,
+        default=None,
+        help="iterations kept in full at each end of a folded loop",
+    )
+    parser.add_argument(
+        "--collapse-chunk",
+        type=int,
+        default=None,
+        help="iterations folded into one composite step before it is emitted",
+    )
+    parser.add_argument(
+        "--collapse-min",
+        type=int,
+        default=None,
+        help="a loop shorter than this is never folded",
+    )
     parser.add_argument("--allow-network", action="store_true")
     parser.add_argument("--allow-subprocesses", action="store_true")
     parser.add_argument("--no-filesystem-guard", action="store_true")
@@ -55,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     from flow_view_tracer.guards import apply_guards  # noqa: PLC0415
     from flow_view_tracer.tracer import Tracer, TracerOptions  # noqa: PLC0415
     from flow_view_tracer.emit import Emitter  # noqa: PLC0415
+    from flow_view_tracer import collapse as collapse_module  # noqa: PLC0415
 
     workdir = str(source_path.parent.resolve())
     guards = apply_guards(
@@ -77,15 +103,35 @@ def main(argv: list[str] | None = None) -> int:
         memory_mb=args.memory_mb,
         output_bytes=args.output_bytes,
     )
+    collapse: dict[str, int] | None = None
+    if not args.no_collapse:
+        keep = args.collapse_keep
+        collapse = {
+            "keep_head": collapse_module.DEFAULT_KEEP_HEAD if keep is None else keep,
+            "keep_tail": collapse_module.DEFAULT_KEEP_TAIL if keep is None else keep,
+            "chunk": args.collapse_chunk or collapse_module.DEFAULT_CHUNK,
+            "min_iterations": (
+                collapse_module.DEFAULT_MIN_ITERATIONS
+                if args.collapse_min is None
+                else args.collapse_min
+            ),
+        }
+
     options = TracerOptions(
         max_depth=args.max_depth,
         max_objects=args.max_objects,
         max_slots=None if args.max_slots <= 0 else args.max_slots,
         complete_heap=args.complete_heap,
         session_id=args.session_id,
+        collapse=collapse,
     )
 
-    emitter = Emitter(events_out, limits=limits)
+    collapser = None
+    if collapse is not None:
+        from flow_view_tracer.collapse import LoopCollapser  # noqa: PLC0415
+
+        collapser = LoopCollapser(**collapse)
+    emitter = Emitter(events_out, limits=limits, collapser=collapser)
     tracer = Tracer(source, str(source_path), emitter, options)
 
     header = tracer.session_header()
@@ -96,6 +142,16 @@ def main(argv: list[str] | None = None) -> int:
 
     for name, reason in guards.unavailable:
         emitter.note("warn", f"The {name} guard is not active on this platform: {reason}")
+
+    # Say so before the run, because the alternative is a reader concluding their __del__ never ran.
+    for line in tracer.analysis.finalizer_lines:
+        emitter.note(
+            "warn",
+            f"The __del__ on line {line} will not run where it would outside flow_view. Tracing "
+            "holds on to objects so their ids stay stable, which delays collection until after the "
+            "run, so anything the finalizer prints may be missing from this trace entirely.",
+            once=False,
+        )
 
     status = tracer.run()
     events_out.flush()

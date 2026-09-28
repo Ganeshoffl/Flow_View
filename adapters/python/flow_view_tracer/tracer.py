@@ -38,6 +38,7 @@ from .analysis import LineInfo, SourceAnalysis, analyze
 from .backends import choose_backend
 from .emit import BudgetExceeded, Emitter, Limits, encode_primitive, encode_value
 from .walk import (
+    is_interpreter_name,
     DEFAULT_MAX_DEPTH,
     DEFAULT_MAX_OBJECTS,
     DEFAULT_MAX_SLOTS,
@@ -52,6 +53,13 @@ from .walk import (
 __all__ = ["Tracer", "TracerOptions", "run_path", "run_source"]
 
 ADAPTER_VERSION = "0.1.0"
+
+#: How far out to look for a finalizer above the current frame.
+#:
+#: The search stops at the first frame the tracer already follows, so in practice it walks one or two
+#: frames. The cap only matters for a stack that is somehow entirely unfamiliar, where giving up and
+#: tracing is the safer answer than walking a deep stack on every call.
+_FINALIZER_SEARCH_LIMIT = 32
 
 #: The tracer's own modules. Frames from these are never traced, so flow_view cannot appear in its
 #: own output.
@@ -80,6 +88,7 @@ class TracerOptions:
         "emit_metrics",
         "session_id",
         "backend",
+        "collapse",
     )
 
     def __init__(
@@ -92,6 +101,7 @@ class TracerOptions:
         emit_metrics: bool = True,
         session_id: str = "local",
         backend: str = "auto",
+        collapse: dict[str, int] | None = None,
     ) -> None:
         self.max_depth = max_depth
         self.max_objects = max_objects
@@ -103,6 +113,9 @@ class TracerOptions:
         # auto, settrace or monitoring. Forcing one is how the conformance suite proves the two
         # mechanisms produce the same trace.
         self.backend = backend
+        # Loop folding, off unless asked for. Keys: keep_head, keep_tail, chunk, min_iterations.
+        # A trace nobody asked to shorten is left exactly as the program ran.
+        self.collapse = collapse
 
 
 class _OpenLoop:
@@ -358,15 +371,21 @@ class Tracer:
         """
         frame_locals = frame.f_locals
         if info is None:
+            # Interpreter bindings are excluded here for the same reason `_diff_locals` excludes them
+            # from the variables pane: they are not the program's data. They were not, and the module
+            # frame's locals *are* its globals, so `__builtins__` became a walk root — and through the
+            # `input` the tracer installs there, the whole tracer became the user's heap.
             return [
                 (name, value)
                 for name, value in frame_locals.items()
-                if not is_atomic(value)
+                if not is_atomic(value) and not is_interpreter_name(name)
             ]
 
         roots: list[tuple[str, Any]] = []
         globals_ = frame.f_globals
         for name in info.names:
+            if is_interpreter_name(name):
+                continue
             if name in frame_locals:
                 value = frame_locals[name]
             elif name in globals_:
@@ -394,7 +413,7 @@ class Tracer:
         fresh: list[tuple[str, Any]] = []
 
         for name, value in current.items():
-            if name.startswith("__") and name.endswith("__"):
+            if is_interpreter_name(name):
                 continue
             had = name in previous
             if had and not _values_differ(previous[name], value):
@@ -418,7 +437,7 @@ class Tracer:
             self._metric("assignment")
 
         for name in list(previous):
-            if name not in current and not (name.startswith("__") and name.endswith("__")):
+            if name not in current and not is_interpreter_name(name):
                 self.emitter.emit(
                     "var_del",
                     {"frame": frame_id, "name": name, "prev": self._encode(previous[name])},
@@ -548,24 +567,74 @@ class Tracer:
         the caller that started the run, the test harness, the innards of every imported module.
         Roughly two thousand events instead of nineteen.
 
-        A frame is in scope when it *is* the program's module frame, or when its caller already is.
+        A frame is in scope when it *is* the program's module frame, or when something above it in the
+        stack is a frame the tracer already follows.
+
+        The walk matters because not every frame in between gets announced: the internals of a library
+        call are skipped, so a callback the library reaches back into — the function passed to
+        ``sorted(key=...)`` — has an unannounced library frame as its immediate caller. Checking only
+        the immediate caller dropped those, and a callback is the user's own code.
         """
         if frame.f_code is self._root_code:
             return True
-        caller = frame.f_back
-        return caller is not None and id(caller) in self._frames
+        hops = 0
+        current = frame.f_back
+        while current is not None and hops < _FINALIZER_SEARCH_LIMIT:
+            if id(current) in self._frames:
+                return True
+            current = current.f_back
+            hops += 1
+        return False
 
     def ignores(self, frame: FrameType) -> bool:
         """Whether this frame must not be traced at all.
 
-        Covers the tracer's own modules and anything reached while muted. Both backends consult it,
-        so neither can let flow_view appear in its own output.
+        Covers the tracer's own modules, anything reached while muted, and finalizers. Both backends
+        consult it, so neither can let flow_view — or the garbage collector — appear in its own output.
         """
         return (
             self._muted
             or self.emitter.stopped
             or frame.f_code.co_filename in self._internal_files
+            or self._is_foreign_finalizer(frame)
         )
+
+    def _is_foreign_finalizer(self, frame: FrameType) -> bool:
+        """Whether this is somebody else's ``__del__``, run by the interpreter of its own accord.
+
+        ``__del__`` is the one method nobody calls. It fires whenever the last reference happens to go
+        away — a fact about the interpreter's bookkeeping rather than about the program — and it can
+        land in the middle of any statement.
+
+        Leaving library finalizers in produced a trace claiming the program had called ``__del__``
+        twenty five times and ``is_closed`` five times, on objects it had never touched. It also showed
+        up as the two backends disagreeing: ``sys.monitoring`` is global and reported the finalizers,
+        while ``settrace`` spends long enough inside its own callbacks that collection usually happened
+        *there*, where tracing is suppressed, and so mostly did not. The disagreement was intermittent
+        and was blamed on the backends. The backends were not the problem.
+
+        A ``__del__`` the user wrote is a different matter: it is their code, they will want to see it
+        run, and the surprise of *when* it runs is worth showing rather than hiding. So only foreign
+        ones are refused.
+
+        Refusing the finalizer itself is not enough, because whatever it calls has to go too, and the
+        two backends do not agree on how a frame becomes known. Walking outward until the first frame
+        the tracer already follows settles it in one test: meeting a foreign ``__del__`` on the way out
+        means this frame is running underneath one, and reaching known territory first means it is not.
+        The walk is short, because a tracked frame is never far away.
+        """
+        hops = 0
+        current: FrameType | None = frame
+        while current is not None and hops < _FINALIZER_SEARCH_LIMIT:
+            code = current.f_code
+            if code.co_name == "__del__" and not self._is_user_file(code.co_filename):
+                return True
+            if id(current) in self._frames:
+                # Reached a frame the tracer is already following, so nothing above it was a finalizer.
+                return False
+            current = current.f_back
+            hops += 1
+        return False
 
     # -- settrace adapter --------------------------------------------------
 
@@ -588,18 +657,32 @@ class Tracer:
 
     def handle_call(self, frame: FrameType) -> bool:
         """A frame was entered. Returns whether its interior should be traced."""
-        user = self._is_user_file(frame.f_code.co_filename)
         name = frame.f_code.co_name
 
-        if not user:
-            # An opaque library call: announced with its arguments, its interior suppressed. No
-            # per-line cost is paid inside it, which is the point.
-            self._push(frame, name, kind="library")
-            frame.f_trace_lines = False
+        if self._is_user_file(frame.f_code.co_filename):
+            # The user's own code, including a callback a library reached back into.
+            self._push(frame, name, kind="user")
+            return True
+
+        if self._frame_stack and self._frame_stack[-1].kind == "library":
+            # Already inside an opaque call, so this is one library calling another and none of it is
+            # the program's business.
+            #
+            # Every nested internal frame used to be announced. `json.dumps(d)` arrived as three steps
+            # — dumps, encode, iterencode — and `import fresh_mod` on a two-line program arrived as
+            # *227*, almost all of it importlib._bootstrap. Opaque is supposed to mean the user sees
+            # the call they made and not the machinery underneath it.
+            #
+            # It was also where the backends disagreed: settrace and sys.monitoring admit frames by
+            # different routes, so they counted the machinery differently. With the machinery gone
+            # there is nothing left to disagree about.
             return False
 
-        self._push(frame, name, kind="user")
-        return True
+        # The outermost library frame: the call the user actually wrote. Announced with its arguments,
+        # its interior suppressed, so no per-line cost is paid inside it.
+        self._push(frame, name, kind="library")
+        frame.f_trace_lines = False
+        return False
 
     def _push(self, frame: FrameType, name: str, *, kind: str) -> int:
         frame_id = self._next_frame_id
@@ -617,8 +700,20 @@ class Tracer:
         code = frame.f_code
         count = code.co_argcount + getattr(code, "co_kwonlyargcount", 0)
         for arg_name in code.co_varnames[:count]:
-            if arg_name in frame.f_locals:
-                args.append({"name": arg_name, "value": self._encode(frame.f_locals[arg_name])})
+            if arg_name not in frame.f_locals:
+                continue
+            value = frame.f_locals[arg_name]
+            # An opaque call does not get to put new things in the heap.
+            #
+            # A library frame's arguments are announced so the reader can see what was passed, and the
+            # interesting ones are the user's own data — which, coming from somewhere the reader can
+            # already see, is a primitive or an object the heap already holds. An object nobody has
+            # heard of, arriving as an argument to a library function, is the library's own business:
+            # this is how a JSONEncoder and a codec's IncrementalDecoder ended up drawn as nodes in the
+            # heap view of a program whose only sin was calling `json.dumps` and `input`.
+            if kind == "library" and not is_atomic(value) and not self._registry.known(value):
+                continue
+            args.append({"name": arg_name, "value": self._encode(value)})
 
         caller = self._frame_stack[-2].frame_id if len(self._frame_stack) > 1 else None
         payload: dict[str, Any] = {
@@ -699,7 +794,17 @@ class Tracer:
         # Changes are normally noticed at the *following* line event, which the last line of a frame
         # never gets. Without this, `items.append(x)` as a program's final statement would leave no
         # trace of the append at all.
-        if not self._unwinding:
+        #
+        # Not for library frames. Their interior is not stepped, but this ran on the way out of them
+        # regardless, and harvested it wholesale: `json.dumps({"a": 1})` reported `markers`,
+        # `_encoder`, `floatstr` and `_iterencode` as variables and put a JSONEncoder in the heap with
+        # `skipkeys`, `ensure_ascii` and `check_circular` on it. Reading one line of input exposed the
+        # innards of a codec. None of it is the user's program, which is the entire point of calling a
+        # library call opaque.
+        #
+        # It was also indexing the wrong file: `self.analysis` describes the user's source, and
+        # `pending_line` here is a line number in someone else's.
+        if not self._unwinding and state.kind != "library":
             state.previous_line = state.pending_line
             fresh = self._diff_locals(frame, state)
             last = self.analysis.at(state.pending_line)
@@ -740,7 +845,13 @@ class Tracer:
             "line": frame.f_lineno,
         }
         if not self._unwinding:
-            payload["return_value"] = self._encode(value)
+            # Same rule as the arguments above: an opaque call does not get to put new things in the
+            # heap. `json.dumps` returns a string and is unaffected; its internal `iterencode` returned
+            # a tuple of half-built chunks, which was being drawn as a heap node. Where the returned
+            # object really is the user's — `sorted(...)` handing back a new list — it is announced a
+            # moment later by the assignment that binds it, which is where a reader looks for it.
+            if state.kind != "library" or is_atomic(value) or self._registry.known(value):
+                payload["return_value"] = self._encode(value)
         self.emitter.emit("frame_pop", payload)
 
     def handle_raise(self, frame: FrameType, exc_type: type, exc_value: BaseException) -> None:
@@ -748,6 +859,23 @@ class Tracer:
         if isinstance(exc_type, type) and issubclass(exc_type, BudgetExceeded):
             # The tracer's own stop signal. Reporting it would show the user an error their program
             # never raised.
+            return
+
+        state = self._frames.get(id(frame))
+        if state is None or state.kind == "library":
+            # A library's private business. Plenty of ordinary calls raise and catch internally —
+            # `re.findall` misses its pattern cache and swallows a KeyError — and this reported each one
+            # as an exception the program had raised, stamped with the *user's* file path and a line
+            # number from somebody else's source.
+            #
+            # Worse, it set the unwinding flag, and only a line event in a traced frame clears it.
+            # A catch inside library code produces no such event, so the flag stayed set: the frame's
+            # last statement was then skipped and its return reported as an exception. `hits =
+            # re.findall(...)` as a program's final line simply lost `hits`.
+            #
+            # An exception that matters to the program reaches the program, and settrace fires an event
+            # in every frame it passes through — so the one in the user's own frame is still reported,
+            # at the user's own line, which is where they would look for it.
             return
 
         self._unwinding = True
@@ -760,16 +888,16 @@ class Tracer:
             return
         self._active_exception = identity
 
-        state = self._frames.get(id(frame))
-        payload: dict[str, Any] = {
-            "type": exc_type.__name__,
-            "message": str(exc_value),
-            "line": frame.f_lineno,
-            "path": self.display_path,
-        }
-        if state is not None:
-            payload["frame"] = state.frame_id
-        self.emitter.emit("exception_raise", payload)
+        self.emitter.emit(
+            "exception_raise",
+            {
+                "type": exc_type.__name__,
+                "message": str(exc_value),
+                "line": frame.f_lineno,
+                "path": self.display_path,
+                "frame": state.frame_id,
+            },
+        )
 
     def _note_handled(self, state: _FrameState, line: int) -> None:
         """Record that a propagating exception was caught here.
@@ -881,6 +1009,11 @@ class Tracer:
             _builtins.input = original_input
             self._close_open_frames()
 
+        # Anything the collapser is still holding goes out before the run is declared over. A loop cut
+        # short by an exception or a budget never reaches its `loop_exit`, and its last few iterations
+        # are sitting in the tail window; without this they would simply vanish.
+        self.emitter.drain_collapser()
+
         self.emitter.emit(
             "run_end",
             {
@@ -950,9 +1083,26 @@ class _InputBridge:
     would put it. A prompt is not program output; it is a question, and the UI needs to show it as
     one rather than as a stray line of text.
 
-    Phase 1 records input supplied up front. Phase 5 adds the blocking round trip to the browser;
-    this is the half that makes a trace deterministic, and it is needed either way.
+    Both kinds of input work: supplied up front, or typed while the program waits. The difference is
+    measured rather than declared — see WAIT_IS_A_PERSON_MS.
     """
+
+    #: Above this wait, the answer came from a person rather than from a buffer.
+    #:
+    #: The distinction cannot be asked about from in here: prefilled input and a typed answer both
+    #: arrive as bytes on stdin, indistinguishable. But they take wildly different amounts of time,
+    #: and that is observable. Input already sitting in the pipe returns in microseconds; a person has
+    #: to read the question before they can start typing, which no one does in a quarter of a second.
+    #:
+    #: The gap between those two is about three orders of magnitude, so the threshold does not need to
+    #: be precise — and the measurement itself is recorded on the event, so a reader can second-guess
+    #: the label instead of having to trust it. This used to be hardcoded to "prefilled", which
+    #: quietly asserted that no human was ever involved in any run.
+    #:
+    #: This is the best the adapter can do alone, which is what matters when the CLI is used directly
+    #: with a redirected or a terminal stdin. Under the server, the label is replaced by one that is
+    #: exact, because the server is the end that supplied the input: see Runner._label_stdin_source.
+    WAIT_IS_A_PERSON_MS = 250.0
 
     def __init__(self, tracer: Tracer, stdin: Any) -> None:
         self._tracer = tracer
@@ -976,7 +1126,14 @@ class _InputBridge:
         finally:
             tracer._muted = False  # noqa: SLF001 - same package
 
+        clock = tracer.emitter.elapsed_ms
+        asked_at = clock()
         supplied = self._stdin.readline()
+        waited_ms = round(clock() - asked_at, 3)
+        # The program was not running while it sat here, so this stretch is not charged to it. Without
+        # this, a run was killed for exceeding its wall-clock budget when the only thing that had taken
+        # thirty seconds was a person reading the question.
+        tracer.emitter.discount_idle(waited_ms)
         if supplied == "":
             # No more input. Raising EOFError is what real `input` does, so the program behaves as it
             # would outside flow_view.
@@ -993,7 +1150,14 @@ class _InputBridge:
         tracer._muted = True  # noqa: SLF001 - same package
         try:
             tracer.emitter.emit(
-                "stdin_response", {"text": answer, "source": "prefilled"}
+                "stdin_response",
+                {
+                    "text": answer,
+                    "source": (
+                        "interactive" if waited_ms >= self.WAIT_IS_A_PERSON_MS else "prefilled"
+                    ),
+                    "waited_ms": waited_ms,
+                },
             )
         finally:
             tracer._muted = False  # noqa: SLF001 - same package
@@ -1056,7 +1220,12 @@ def run_source(
     options: TracerOptions | None = None,
 ) -> str:
     """Trace a program given as text. Emits the session header, then the events."""
-    emitter = Emitter(stream, limits=limits, on_event=on_event)
+    collapser = None
+    if options is not None and options.collapse is not None:
+        from .collapse import LoopCollapser  # noqa: PLC0415 - optional path
+
+        collapser = LoopCollapser(**options.collapse)
+    emitter = Emitter(stream, limits=limits, on_event=on_event, collapser=collapser)
     tracer = Tracer(source, path, emitter, options)
     header = {"schema": "flow_view/trace@1", "session": tracer.session_header()}
     if on_event is not None:

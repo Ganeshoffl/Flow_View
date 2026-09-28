@@ -150,17 +150,44 @@ function denseGraph(count: number, degree: number): Built {
   });
 }
 
+/** How many times a measurement is repeated before the fastest is taken. */
+const ATTEMPTS = 5;
+
+/**
+ * The best of several runs, not a single sample.
+ *
+ * A single sample measures the machine as much as the code. The 500-node tree case failed once at
+ * 53 ms against a 33 ms budget and then passed on the next three full runs: the suite runs files in
+ * parallel, so one measurement can land while several other workers are busy. That failure said
+ * nothing about the layout code, and a test that cries wolf gets ignored — which is the same problem
+ * as a test that cannot fail, arrived at from the other direction.
+ *
+ * The fastest run is the honest statistic here, because the question is whether the work *can* be done
+ * inside a frame. Contention makes a run slower; nothing makes it spuriously faster, so a best-of-N
+ * that still misses the budget means the algorithm genuinely got worse. The first run is discarded
+ * separately, since it pays for lazy initialisation nobody pays twice.
+ */
 function timeLayout(built: Built): { ms: number; nodes: number } {
   const { store } = built;
-  // Inference is measured together with layout, because a frame has to pay for both.
-  const started = performance.now();
-  const inference = inferStructures(store.state, { access: collectAccess(store) });
-  const layout = layoutHeap({
-    state: store.state,
-    inferences: inference.byObject,
-    language: "python",
-  });
-  return { ms: performance.now() - started, nodes: layout.nodes.length };
+  let best = Infinity;
+  let nodes = 0;
+
+  for (let attempt = 0; attempt <= ATTEMPTS; attempt++) {
+    // Inference is measured together with layout, because a frame has to pay for both.
+    const started = performance.now();
+    const inference = inferStructures(store.state, { access: collectAccess(store) });
+    const layout = layoutHeap({
+      state: store.state,
+      inferences: inference.byObject,
+      language: "python",
+    });
+    const elapsed = performance.now() - started;
+    nodes = layout.nodes.length;
+    // Attempt 0 is a warm-up: it pays for JIT and lazy allocation that no later frame pays again.
+    if (attempt > 0) best = Math.min(best, elapsed);
+  }
+
+  return { ms: best, nodes };
 }
 
 describe("layout stays inside a frame", () => {

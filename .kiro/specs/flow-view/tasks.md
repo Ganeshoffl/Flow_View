@@ -126,14 +126,72 @@ TypeScript tests including 47 narration and 15 navigation.
 
 Make long programs survivable, while streaming.
 
-- [ ] 4.1 Streaming loop collapser: retain first and last *K* iterations, fold the middle
-- [ ] 4.2 Folded spans emitted as **single composite invertible events** carrying net before/after state,
+- [x] 4.1 Streaming loop collapser: retain first and last *K* iterations, fold the middle
+- [x] 4.2 Folded spans emitted as **single composite invertible events** carrying net before/after state,
       so collapsing cannot break the invertibility guarantee the TraceStore depends on
+
+Measured on a million-iteration accumulate loop: 730 events, 577 steps, 0.2 MB, 18 MB peak RSS, and
+the exact sum. Two constraints turned out to matter more than the folding itself:
+
+- **A fold may only swallow what it can represent.** `CollapseEffect` covers variable and heap writes,
+  so a span containing output, a blocking read, an exception, a new object or an unbalanced frame is
+  not folded at all. Compression that loses a `print` would make the trace a lie, and the step and
+  output budgets already bound those cases.
+- **Folding discards steps, not work.** Metric deltas are summed onto the collapse event, so a folded
+  trace still reports a million iterations. A metrics pane that got cheaper because the trace got
+  shorter would misrepresent the algorithm — which is the one thing the metrics pane exists to show.
+
+`collapse` gained `from_iter`/`to_iter` for 4.3: a re-run has its own seq numbers, so a span can only
+be re-requested by iteration range.
 - [ ] 4.3 Expand-on-demand by re-running a single region with folding disabled
 - [ ] 4.4 TraceStore retention policy: detail near the playhead, summaries far from it
-- [ ] 4.5 Delta-encoded snapshots with periodic full keyframes; interval adapted to heap size, tuned
+- [~] 4.5 Delta-encoded snapshots with periodic full keyframes; interval adapted to heap size, tuned
       against trace bytes versus seek latency
+
+      **Keyframes done, in the store rather than the trace.** The store captures a detached copy of its
+      state every few thousand events *as the playhead moves forward*, and a seek takes whichever route
+      is cheapest: walk from here, restore the nearest keyframe behind the target, or replay from the
+      start. Full-length jump at 100,000 steps:
+
+      | | cold | warm |
+      |---|---|---|
+      | 1 event/step | 42.7 ms | **0.9 ms** |
+      | 4 events/step | 163.2 ms | **0.6 ms** |
+
+      Warm means the trace has been played through once, which a live run always has, because the
+      playhead follows the streaming edge. So the budget is met on the path users actually take.
+
+      Forward-only capture is the safety property, not an accident: the undo journal behind a keyframe
+      was necessarily built on the way past it, so restoring one and then stepping *backwards* still has
+      every inverse it needs. Equivalence with sequential replay is asserted at seven positions, after
+      mixed forward/backward jumping, and after 300 single back-steps from a restored keyframe.
+
+      **Still to do:** the cold case, and it needs the `snapshot` events the schema already defines.
+      Keyframes cannot help a trace that has never been walked. Delta encoding and heap-size-adapted
+      intervals belong with that.
+
+      Now measured rather than assumed, at 100,000 retained steps
+      (`packages/trace-store/test/seek-latency.test.ts`):
+
+      | operation | 1 event/step | 4 events/step | budget |
+      |---|---|---|---|
+      | one `next()` / `prev()` | 0.001 ms | 0.002 ms | 50 ms |
+      | 1000-step seek | 0.12 ms | 0.59 ms | 50 ms |
+      | full-length backward jump | 9.6 ms | 51.1 ms | 50 ms |
+      | full-length forward jump | 42.6 ms | **110.8 ms** | 50 ms |
+
+      Stepping is effectively free because every event carries its own inverse, and dragging the
+      playback bar is a run of short seeks. The single long-distance jump is the one operation that
+      misses, and it misses by 2× on a trace with a realistic number of events per step.
+
+      Backward is cheaper than forward because the undo journal is already built behind the playhead;
+      forward from a cold start has to apply events and build it. That is also why a keyframe cache
+      of visited positions would not help the *first* jump, which is the one a user notices — the
+      acceleration has to come from `snapshot` events the adapter emits, which is what this task is.
+      The store has `captureState` but nothing that restores one, so there is no shortcut to bolt on.
 - [ ] 4.6 Adversarial corpus: million-iteration loops, deep recursion, wide heaps, huge strings
+      — the million-iteration loop is covered (conformance case 016 and a server-level check); deep
+      recursion, wide heaps and huge strings are not
 
 **Gate:** a one-million-iteration loop traces to completion, stays responsive, reports accurate final
 state, and never exhausts browser memory. Seek latency stays inside the 50 ms budget at 100k retained steps.
@@ -142,14 +200,33 @@ state, and never exhausts browser memory. Seek latency stays inside the 50 ms bu
 
 ## Phase 5 — Interactive input
 
-- [ ] 5.1 `stdin_request` blocking protocol through runner, server and UI
-- [ ] 5.2 Input prompt UI with history, appearing exactly where execution paused
-- [ ] 5.3 Prefilled-stdin mode producing a fully scrubbable trace with no human in the loop
-- [ ] 5.4 Deterministic replay from recorded `stdin_response` events
+Mostly landed early, and not because it was brought forward. The blocking protocol was already
+written; what stopped it working was three buffers in a row, each of which looked like a performance
+detail rather than a correctness one:
+
+- the tracer never flushed, so Python's 8 KB pipe buffer held the question;
+- the server decided whether to flush a batch only when the *next* event arrived, which for a blocked
+  program is never;
+- prefilled stdin was written without the trailing newline that `input()` needs to return.
+
+Any one of them deadlocks the run with the UI showing "running". Fixing them also exposed that every
+wall-clock deadline in the stack was timing the *person*: a run was killed for "timeout" when
+somebody had spent thirty seconds reading the question.
+
+- [x] 5.1 `stdin_request` blocking protocol through runner, server and UI
+- [x] 5.2 Input prompt UI, appearing where execution paused — no history yet
+- [x] 5.3 Prefilled-stdin mode producing a fully scrubbable trace with no human in the loop
+- [x] 5.4 Deterministic replay from recorded `stdin_response` events
+- [x] 5.6 Time spent waiting for a person excluded from the program's execution budget and clock
 - [ ] 5.5 Back-stepping across an input boundary, then forward again, without re-prompting
+- [ ] 5.7 Prompt history, so a re-run can be answered the same way without retyping
 
 **Gate:** a program that asks three questions runs interactively, then replays start to finish from the
 saved trace with no prompting and byte-identical results.
+
+Currently proven for one question (`scripts/verify-live.sh`, plus
+`TestAProgramThatStopsToAskAQuestion`). The three-question case and back-stepping across an input
+boundary are what remain.
 
 ---
 

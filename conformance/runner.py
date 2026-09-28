@@ -256,9 +256,64 @@ def verify(case: Case, trace: Trace) -> Result:
 
     for metric, minimum in (expect.get("metrics_at_least") or {}).items():
         total = sum(e["delta"] for e in trace.of("metric") if e["name"] == metric)
+        # Folding a loop discards steps, not work. A collapse event carries the totals for the
+        # iterations it replaced, and leaving them out here would let a folded trace under-report how
+        # much the program did - which is exactly the lie the metrics pane must not tell.
+        total += sum(
+            int((e.get("metrics") or {}).get(metric, 0)) for e in trace.of("collapse")
+        )
         result.check(total >= minimum, f"metric {metric}: expected at least {minimum}, got {total}")
 
+    _check_collapsed(expect, trace, result)
+
     return result
+
+
+def _check_collapsed(expect: dict[str, Any], trace: Trace, result: Result) -> None:
+    """A folded trace has to admit what it folded, and stay reversible.
+
+    Language-agnostic on purpose: every adapter that collapses loops owes the same guarantees, and an
+    adapter that does not collapse at all simply has no case expecting it.
+    """
+    wanted = expect.get("collapsed")
+    if wanted is None:
+        return
+    folds = trace.of("collapse")
+
+    if wanted.get("at_least_one"):
+        result.check(bool(folds), "no collapse event was emitted for a loop long enough to fold")
+    if not folds:
+        return
+
+    folded = sum(f["iterations"] for f in folds)
+    minimum = wanted.get("iterations_at_least")
+    if minimum is not None:
+        result.check(
+            folded >= minimum,
+            f"folded iterations: expected at least {minimum}, got {folded}",
+        )
+
+    for fold in folds:
+        result.check(
+            bool(fold.get("effects")),
+            "a collapse event carried no effects, so stepping back over it would be guesswork",
+        )
+        # Invertibility is the whole contract: every effect needs an `after` to apply and a `before` to
+        # undo. A slot that did not exist before is represented by `before` being absent, so only the
+        # presence of one or the other is required - not both.
+        for effect in fold["effects"]:
+            result.check(
+                "after" in effect or "before" in effect,
+                f"collapse effect on {effect.get('key')!r} carries neither before nor after",
+            )
+            result.check(
+                effect.get("kind") in ("var", "obj"),
+                f"collapse effect has an unknown kind {effect.get('kind')!r}",
+            )
+        result.check(
+            fold.get("from_iter") is not None and fold.get("to_iter") is not None,
+            "a collapse event did not say which iterations it replaced, so it cannot be expanded",
+        )
 
 
 def _check_branches(expect: dict[str, Any], trace: Trace, result: Result) -> None:
@@ -508,7 +563,20 @@ def _check_structure(expect: dict[str, Any], trace: Trace, result: Result) -> No
 def run_python(case: Case) -> Trace:
     """Trace a case with the Python adapter, in process."""
     from flow_view_tracer.emit import Limits
-    from flow_view_tracer.tracer import run_source
+    from flow_view_tracer.collapse import (
+        DEFAULT_CHUNK,
+        DEFAULT_KEEP_HEAD,
+        DEFAULT_KEEP_TAIL,
+        DEFAULT_MIN_ITERATIONS,
+    )
+    from flow_view_tracer.tracer import TracerOptions, run_source
+
+    DEFAULT_COLLAPSE = {
+        "keep_head": DEFAULT_KEEP_HEAD,
+        "keep_tail": DEFAULT_KEEP_TAIL,
+        "chunk": DEFAULT_CHUNK,
+        "min_iterations": DEFAULT_MIN_ITERATIONS,
+    }
 
     source = case.source_for("python")
     assert source is not None
@@ -535,7 +603,16 @@ def run_python(case: Case) -> Trace:
 
         sys.stdin = io.StringIO(stdin_text)
     try:
-        status = run_source(source, "main.py", on_event=sink, limits=limits)
+        # Traced the way the product traces, collapsing included. A corpus that pinned behaviour the
+        # user never gets would pin the wrong thing. Cases below the fold threshold are unaffected,
+        # which is why enabling it here changed none of the existing fifteen.
+        status = run_source(
+            source,
+            "main.py",
+            on_event=sink,
+            limits=limits,
+            options=TracerOptions(collapse=DEFAULT_COLLAPSE),
+        )
     finally:
         sys.stdin = previous_stdin
 
@@ -564,16 +641,49 @@ def write_trace(case: Case, language: str, trace: Trace) -> Path:
     return path
 
 
+def clear_traces() -> None:
+    """Remove previously recorded traces before writing the current ones.
+
+    Stale traces are worse than missing ones. The directory is not version controlled, so switching
+    branches leaves behind files for cases that no longer exist — and the replay suite reads the
+    *directory*, so it will happily replay a trace produced by code that is no longer checked out. It
+    did: a case added on another branch went on being replayed here, and the suite reported fifteen
+    extra passing tests for a corpus entry this commit does not contain.
+    """
+    if not TRACE_OUT.exists():
+        return
+    for stale in TRACE_OUT.glob("*.json"):
+        stale.unlink()
+
+
+def write_manifest(written: list[str]) -> None:
+    """Record exactly which traces belong to this run, so the replay suite can insist on the set.
+
+    Clearing the directory stops stale files accumulating, but it cannot help a suite that runs
+    without the generator having run at all, or after only some cases were written. The manifest lets
+    the replay suite check the set it found is the set that was meant.
+    """
+    TRACE_OUT.mkdir(parents=True, exist_ok=True)
+    (TRACE_OUT / "manifest.json").write_text(
+        json.dumps({"traces": sorted(written)}, indent=2) + "\n", encoding="utf-8"
+    )
+
+
 def run_all(*, write: bool = True) -> list[Result]:
     results: list[Result] = []
+    written: list[str] = []
+    if write:
+        clear_traces()
     for case in load_cases():
         for language, adapter in ADAPTERS.items():
             if case.source_for(language) is None:
                 continue
             trace = adapter(case)
             if write:
-                write_trace(case, language, trace)
+                written.append(write_trace(case, language, trace).stem)
             results.append(verify(case, trace))
+    if write:
+        write_manifest(written)
     return results
 
 

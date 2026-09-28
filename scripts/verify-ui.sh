@@ -13,7 +13,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=scripts/_env.sh
 source "$ROOT/scripts/_env.sh"
-SESSION="${1:-fv-verify}"
+AB_SESSION="${1:-fv-verify}"
 URL="http://127.0.0.1:5173/"
 FAILURES=0
 
@@ -33,19 +33,16 @@ if [ "${code:-}" != "200" ]; then
   exit 1
 fi
 
-ab() { agent-browser --session "$SESSION" "$@"; }
 # agent-browser assigns element refs during a snapshot, so one is needed before any interaction.
 ab open "$URL" >/dev/null 2>&1
+sleep 2
+ab_instrument >/dev/null
 ab snapshot >/dev/null 2>&1
 
-evaluate() { ab eval "$1" 2>&1 | tail -2 | head -1 | sed 's/^"//; s/"$//'; }
+evaluate() { ab_eval "$1"; }
 
 # The app opens on "Run your code", so switch to the examples before looking for the picker.
-ab eval "(() => {
-  const tab = [...document.querySelectorAll('[role=tab]')].find(t => t.textContent === 'Examples');
-  if (tab) tab.click();
-  return tab ? 'switched' : 'no tab';
-})()" >/dev/null 2>&1
+ab_click_text '[role=tab]' 'Examples' || { echo "could not switch to the examples tab" >&2; exit 1; }
 ab snapshot >/dev/null 2>&1
 
 fixtures="$(evaluate "(() => [...document.querySelectorAll('#fixture option')].map(o => o.value).join(' '))()")"
@@ -85,8 +82,12 @@ for id in $fixtures; do
 done
 
 echo
-errors="$(evaluate "(() => (window.__fvErrors ?? []).length)()")"
-echo "console errors observed: ${errors:-0}"
+errors="$(ab_errors)"
+echo "console errors observed: $errors"
+if [ "$errors" != "0" ]; then
+  echo "the page reported errors: $errors" >&2
+  FAILURES=$((FAILURES + 1))
+fi
 
 if [ "$FAILURES" -gt 0 ]; then
   echo "$FAILURES fixture(s) did not rewind cleanly" >&2

@@ -91,6 +91,9 @@ run "no unresolved task markers in specs" bash -c '
 
 if [ "$SKIP_BROWSER" -eq 0 ]; then
   heading "7. in a real browser"
+  # The harness first. Everything below reports through it, and it has been wrong before: a click
+  # that missed its target printed success, and an error count was read from a variable nothing set.
+  run "the harness can fail" bash scripts/verify-harness.sh cv-harness
   run "fixtures step forward and back" bash scripts/verify-ui.sh cv-ui
   run "a live run traces end to end" bash scripts/verify-live.sh cv-live
   run "structures are recognised" bash scripts/verify-heap.sh cv-heap
@@ -100,11 +103,30 @@ else
   echo "  skipped"
 fi
 
-heading "8. repository"
+heading "8. the tests themselves"
+# Reverts each fix and requires the suite to notice. Two fixes in this repository once had no test that
+# failed without them, which is indistinguishable from not having fixed anything. `--quick` skips the
+# repeat runs that re-check the two former flakes; run the script directly for those.
+run "every fix has a test that fails without it" bash scripts/verify-fixes.sh --quick
+
+heading "9. the wheel"
+# A checkout hides almost every way an install can be broken. Bounded because it builds and installs.
+run "an installed flow_view works" timeout 420 bash scripts/verify-install.sh
+
+heading "10. repository"
 run "working tree is clean" bash -c '[ -z "$(git status --porcelain)" ]'
-run "local matches origin" bash -c '
+# Compare against whatever this branch tracks, not against main. Hardcoding origin/main meant the
+# check could only ever pass on one branch, and quietly failed on every other for the wrong reason.
+run "local matches its remote" bash -c '
   git fetch origin --quiet 2>/dev/null || true
-  [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main 2>/dev/null || echo none)" ]'
+  branch="$(git branch --show-current)"
+  remote="$(git rev-parse "origin/$branch" 2>/dev/null || echo none)"
+  if [ "$remote" = "none" ]; then
+    echo "origin/$branch does not exist yet - push the branch"
+    exit 1
+  fi
+  [ "$(git rev-parse HEAD)" = "$remote" ] || {
+    echo "HEAD and origin/$branch differ"; exit 1; }'
 
 printf '\n\033[1m%s\033[0m\n' "result"
 printf '  %d passed, %d failed\n' "$PASSED" "$FAILED"

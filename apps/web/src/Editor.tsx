@@ -1,16 +1,40 @@
 /**
  * The source editor.
  *
- * A textarea with a line-number gutter and tab handling. Deliberately minimal for now: CodeMirror 6
- * is the documented choice and brings syntax highlighting and inline error markers, and swapping it
- * in touches only this file. What matters first is that a user can paste a program and run it, and
- * the editor is not what makes that interesting.
+ * CodeMirror 6, which is what design.md specified from the start and what FR-1 asks for: syntax
+ * highlighting for all five languages. It was a plain textarea for four phases — good enough to paste
+ * a program and press run, which is what mattered first, but leaving a stated requirement unmet while
+ * the rest of the tool grew around it.
  *
- * Tab inserts four spaces rather than moving focus, because this is Python and a tab key that
- * escapes the field makes the editor unusable for its actual purpose. Shift-Tab dedents.
+ * A few things are deliberate:
+ *
+ * - **The highlight palette is the app's palette.** Colours come from the same CSS variables the rest
+ *   of the panes use, so the editor does not look like a component from a different program.
+ * - **Ctrl/Cmd+Enter runs**, because that is the shortcut every notebook and playground has trained
+ *   people to expect. It is bound ahead of the default keymap so nothing else can claim it.
+ * - **Tab indents rather than moving focus.** A tab key that escapes the field makes an editor useless
+ *   for writing Python, which is most of what this one is for.
+ * - **The editable element keeps the class `fv-editor-area`.** The browser gates drive it by that
+ *   selector, and a rename would have quietly stopped them typing anywhere.
  */
 
-import { useCallback, useMemo, useRef } from "react";
+import { useEffect, useRef } from "react";
+
+import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { cpp } from "@codemirror/lang-cpp";
+import { java } from "@codemirror/lang-java";
+import { javascript } from "@codemirror/lang-javascript";
+import { python } from "@codemirror/lang-python";
+import {
+  HighlightStyle,
+  bracketMatching,
+  indentOnInput,
+  indentUnit,
+  syntaxHighlighting,
+} from "@codemirror/language";
+import { Compartment, EditorState, type Extension } from "@codemirror/state";
+import { EditorView, highlightActiveLine, keymap, lineNumbers } from "@codemirror/view";
+import { tags } from "@lezer/highlight";
 
 import type { Language } from "@flow-view/trace-schema";
 
@@ -22,73 +46,166 @@ export interface EditorProps {
   readonly disabled?: boolean;
 }
 
-const INDENT = "    ";
+/** All five languages FR-1 names. C and C++ share one grammar. */
+function grammarFor(language: Language): Extension {
+  switch (language) {
+    case "python":
+      return python();
+    case "javascript":
+      return javascript();
+    case "java":
+      return java();
+    case "c":
+    case "cpp":
+      return cpp();
+    default:
+      return [];
+  }
+}
+
+/**
+ * Highlighting drawn from the app's own variables.
+ *
+ * Every colour here already exists elsewhere in the interface, so the editor reads as part of the same
+ * tool rather than as an embedded widget with opinions of its own.
+ */
+const highlight = HighlightStyle.define([
+  { tag: tags.keyword, color: "var(--fv-syn-keyword)" },
+  { tag: [tags.controlKeyword, tags.moduleKeyword], color: "var(--fv-syn-keyword)" },
+  { tag: [tags.definitionKeyword, tags.operatorKeyword], color: "var(--fv-syn-keyword)" },
+  { tag: [tags.name, tags.deleted, tags.character, tags.propertyName], color: "var(--fv-text)" },
+  { tag: [tags.function(tags.variableName), tags.labelName], color: "var(--fv-syn-function)" },
+  { tag: [tags.definition(tags.variableName)], color: "var(--fv-syn-function)" },
+  { tag: [tags.typeName, tags.className, tags.namespace], color: "var(--fv-syn-type)" },
+  { tag: [tags.number, tags.bool, tags.null], color: "var(--fv-syn-number)" },
+  { tag: [tags.string, tags.special(tags.string), tags.regexp], color: "var(--fv-syn-string)" },
+  { tag: [tags.comment, tags.lineComment, tags.blockComment], color: "var(--fv-syn-comment)" },
+  { tag: [tags.operator, tags.punctuation], color: "var(--fv-syn-operator)" },
+  { tag: tags.invalid, color: "var(--fv-warn)" },
+]);
+
+/** Layout and colours, so the editor inherits the pane it sits in. */
+const theme = EditorView.theme(
+  {
+    "&": {
+      height: "100%",
+      fontSize: "13px",
+      backgroundColor: "transparent",
+      color: "var(--fv-text)",
+    },
+    ".cm-scroller": { fontFamily: "var(--fv-mono)", lineHeight: "1.55", overflow: "auto" },
+    ".cm-content": { caretColor: "var(--fv-accent)", padding: "6px 0" },
+    ".cm-gutters": {
+      backgroundColor: "transparent",
+      color: "var(--fv-muted)",
+      border: "none",
+      paddingRight: "8px",
+      userSelect: "none",
+    },
+    ".cm-activeLine": { backgroundColor: "var(--fv-surface-2)" },
+    ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--fv-text)" },
+    "&.cm-focused": { outline: "none" },
+    ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--fv-accent)" },
+    "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": {
+      backgroundColor: "var(--fv-accent-dim)",
+    },
+    ".cm-matchingBracket": {
+      backgroundColor: "var(--fv-accent-dim)",
+      outline: "1px solid var(--fv-accent)",
+    },
+  },
+  { dark: true },
+);
 
 export function Editor({ value, language, onChange, onRun, disabled }: EditorProps) {
-  const areaRef = useRef<HTMLTextAreaElement | null>(null);
-  const lineCount = useMemo(() => Math.max(1, value.split("\n").length), [value]);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const viewRef = useRef<EditorView | null>(null);
 
-  const handleKey = useCallback(
-    (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      const area = event.currentTarget;
+  // Held in refs so the view is built once. Rebuilding it on every keystroke would lose the selection,
+  // the undo history and the scroll position.
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const onRunRef = useRef(onRun);
+  onRunRef.current = onRun;
 
-      // Ctrl/Cmd+Enter runs, which is the shortcut people already expect from every notebook and
-      // playground they have used.
-      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-        event.preventDefault();
-        onRun();
-        return;
-      }
+  const languageRef = useRef(new Compartment());
+  const editableRef = useRef(new Compartment());
 
-      if (event.key === "Tab") {
-        event.preventDefault();
-        const { selectionStart, selectionEnd } = area;
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
 
-        if (event.shiftKey) {
-          const lineStart = value.lastIndexOf("\n", selectionStart - 1) + 1;
-          if (value.startsWith(INDENT, lineStart)) {
-            const next = value.slice(0, lineStart) + value.slice(lineStart + INDENT.length);
-            onChange(next);
-            requestAnimationFrame(() => {
-              area.selectionStart = area.selectionEnd = Math.max(
-                lineStart,
-                selectionStart - INDENT.length,
-              );
-            });
-          }
-          return;
-        }
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: value,
+        extensions: [
+          lineNumbers(),
+          history(),
+          bracketMatching(),
+          indentOnInput(),
+          highlightActiveLine(),
+          indentUnit.of("    "),
+          syntaxHighlighting(highlight),
+          theme,
+          // Ahead of the default keymap, so nothing else can claim the run shortcut.
+          keymap.of([
+            {
+              key: "Mod-Enter",
+              preventDefault: true,
+              run: () => {
+                onRunRef.current();
+                return true;
+              },
+            },
+          ]),
+          keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+          languageRef.current.of(grammarFor(language)),
+          editableRef.current.of(EditorView.editable.of(!disabled)),
+          EditorView.updateListener.of((update) => {
+            if (update.docChanged) onChangeRef.current(update.state.doc.toString());
+          }),
+          EditorView.contentAttributes.of({
+            "aria-label": "Program source",
+            spellcheck: "false",
+            autocapitalize: "off",
+            autocorrect: "off",
+          }),
+        ],
+      }),
+      parent: host,
+    });
+    // The gates drive the editor by this class, and CodeMirror owns the element.
+    view.contentDOM.classList.add("fv-editor-area");
+    viewRef.current = view;
 
-        const next = value.slice(0, selectionStart) + INDENT + value.slice(selectionEnd);
-        onChange(next);
-        requestAnimationFrame(() => {
-          area.selectionStart = area.selectionEnd = selectionStart + INDENT.length;
-        });
-        return;
-      }
+    return () => {
+      view.destroy();
+      viewRef.current = null;
+    };
+    // Built once. Prop changes are pushed in through the effects below rather than by rebuilding.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-      if (event.key === "Enter") {
-        // Keep the current indentation, and add a level after a colon. Without this, writing a loop
-        // in a plain textarea means re-typing the indent on every line.
-        const lineStart = value.lastIndexOf("\n", area.selectionStart - 1) + 1;
-        const currentLine = value.slice(lineStart, area.selectionStart);
-        const indent = /^[ \t]*/.exec(currentLine)?.[0] ?? "";
-        const deeper = /:\s*$/.test(currentLine) ? INDENT : "";
-        if (!indent && !deeper) return;
+  // Push an externally changed value in, without disturbing the caret when nothing actually differs.
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    const current = view.state.doc.toString();
+    if (current === value) return;
+    view.dispatch({ changes: { from: 0, to: current.length, insert: value } });
+  }, [value]);
 
-        event.preventDefault();
-        const insertion = `\n${indent}${deeper}`;
-        const next =
-          value.slice(0, area.selectionStart) + insertion + value.slice(area.selectionEnd);
-        const caret = area.selectionStart + insertion.length;
-        onChange(next);
-        requestAnimationFrame(() => {
-          area.selectionStart = area.selectionEnd = caret;
-        });
-      }
-    },
-    [onChange, onRun, value],
-  );
+  useEffect(() => {
+    viewRef.current?.dispatch({
+      effects: languageRef.current.reconfigure(grammarFor(language)),
+    });
+  }, [language]);
+
+  useEffect(() => {
+    viewRef.current?.dispatch({
+      effects: editableRef.current.reconfigure(EditorView.editable.of(!disabled)),
+    });
+  }, [disabled]);
 
   return (
     <div className="fv-pane fv-editor">
@@ -96,25 +213,7 @@ export function Editor({ value, language, onChange, onRun, disabled }: EditorPro
         <span>Your code</span>
         <span className="fv-muted">{language}</span>
       </div>
-      <div className="fv-editor-body">
-        <div className="fv-editor-gutter" aria-hidden="true">
-          {Array.from({ length: lineCount }, (_, index) => (
-            <span key={index}>{index + 1}</span>
-          ))}
-        </div>
-        <textarea
-          ref={areaRef}
-          className="fv-editor-area"
-          value={value}
-          spellCheck={false}
-          autoCapitalize="off"
-          autoCorrect="off"
-          disabled={disabled}
-          aria-label="Program source"
-          onChange={(event) => onChange(event.target.value)}
-          onKeyDown={handleKey}
-        />
-      </div>
+      <div className="fv-editor-body" ref={hostRef} />
     </div>
   );
 }

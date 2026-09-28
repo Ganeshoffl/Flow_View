@@ -132,8 +132,8 @@ invocation, and recursion produces distinct frames per depth.
 | Type | Payload | Notes |
 |---|---|---|
 | `stdout` / `stderr` | `text` | Attributed to the current step, so output lines up with the line that printed it. |
-| `stdin_request` | `prompt`: string? | Execution is now blocked awaiting input. |
-| `stdin_response` | `text`, `source`: `interactive` \| `prefilled` | Recorded so replay is deterministic without a human. |
+| `stdin_request` | `prompt`: string? | Execution is now blocked awaiting input. Adapters must flush before blocking: a question left in a buffer cannot be answered, so the run deadlocks. |
+| `stdin_response` | `text`, `source`: `interactive` \| `prefilled`, `waited_ms`: number? | Recorded so replay is deterministic without a human. `source` is derived from `waited_ms` by the adapter, and corrected by the host that supplied the input where it knows exactly. Time in `waited_ms` is excluded from the program's `ms` clock and from its wall-clock budget — it is the person's time, not the program's. |
 
 ### 4.8 Errors
 

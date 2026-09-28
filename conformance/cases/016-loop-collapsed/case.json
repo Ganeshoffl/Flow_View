@@ -1,0 +1,30 @@
+{
+  "name": "loop-collapsed",
+  "description": "A loop long enough to be folded. The point is that the folded trace still reports the exact final state, and that the store can step backward across the fold without the events it replaced.",
+  "concepts": [
+    "loops",
+    "collapsing",
+    "large traces"
+  ],
+  "expect": {
+    "status": "ok",
+    "stdout": "124750\n",
+    "final_variables": {
+      "total": 124750,
+      "i": 499
+    },
+    "loops": [
+      {
+        "iterations": 500,
+        "reason": "condition"
+      }
+    ],
+    "metrics_at_least": {
+      "iteration": 500
+    },
+    "collapsed": {
+      "at_least_one": true,
+      "iterations_at_least": 400
+    }
+  }
+}

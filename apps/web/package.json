@@ -12,11 +12,20 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
-    "@flow-view/renderers": "workspace:*",
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/lang-cpp": "^6.0.3",
+    "@codemirror/lang-java": "^6.0.2",
+    "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/lang-python": "^6.2.1",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.13",
     "@flow-view/inference": "workspace:*",
+    "@flow-view/renderers": "workspace:*",
     "@flow-view/trace-fixtures": "workspace:*",
     "@flow-view/trace-schema": "workspace:*",
     "@flow-view/trace-store": "workspace:*",
+    "@lezer/highlight": "^1.2.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

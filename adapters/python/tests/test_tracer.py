@@ -534,6 +534,64 @@ class TestLibraryBoundary:
         mine = [e for e in traced.of("frame_push") if e["func"] == "mine"][0]
         assert mine["kind"] == "user"
 
+    def test_a_library_call_adds_nothing_of_its_own_to_the_heap(self) -> None:
+        """An opaque call's interior is not the program's state either.
+
+        The frame is not stepped, but `handle_return` used to diff its locals and walk its heap on the
+        way out, which put a JSONEncoder and a codec's IncrementalDecoder on screen for programs that
+        had only called `json.dumps` and `input`. It was also asking the wrong file while it did so:
+        `self.analysis` describes the *user's* source, and a library frame's pending line is a line
+        number in someone else's.
+        """
+        traced = Traced("import json\nd = {'a': 1}\ns = json.dumps(d)\n")
+        announced = [e["type_name"] for e in traced.of("obj_new")]
+        # The json module, because `import json` binds it, and the user's own dict. Nothing else: no
+        # encoder, no kwargs dict the program never wrote.
+        assert announced == ["module", "dict"], f"the library put its own objects on the heap: {announced}"
+
+    def test_a_library_call_is_one_frame_and_not_its_whole_call_tree(self) -> None:
+        """Opaque means the user sees the call they made, not the machinery underneath it.
+
+        `json.dumps` reaches `encode`, which reaches `iterencode`. All three used to be announced, so a
+        loop of twenty calls put sixty frames on the stack pane for twenty things the user wrote. Only
+        the outermost frame - the one user code actually called - belongs in the trace.
+        """
+        traced = Traced("import json\nout = []\nfor i in range(5):\n    out.append(json.dumps({'i': i}))\n")
+        library = [e for e in traced.of("frame_push") if e["kind"] == "library"]
+        names = {e["func"] for e in library}
+
+        assert len(library) == 5, f"expected one frame per call, got {len(library)}: {names}"
+        assert names == {"dumps"}, f"internals leaked into the trace: {names - {'dumps'}}"
+
+    def test_importing_a_module_does_not_trace_the_import_machinery(self, tmp_path: Any) -> None:
+        # `import x` on a two-line program used to cost 227 steps, nearly all of it
+        # importlib._bootstrap. A reader looking for their own two lines had to find them among
+        # `_find_and_load`, `_path_importer_cache`, `source_to_code` and forty others.
+        (tmp_path / "freshly_imported.py").write_text("VALUE = 42\n", encoding="utf-8")
+        sys.path.insert(0, str(tmp_path))
+        try:
+            sys.modules.pop("freshly_imported", None)
+            traced = Traced("import freshly_imported\nx = freshly_imported.VALUE\n")
+        finally:
+            sys.path.remove(str(tmp_path))
+            sys.modules.pop("freshly_imported", None)
+
+        steps = [e for e in traced.events if "step" in e]
+        names = {e["func"] for e in traced.of("frame_push")}
+        assert len(steps) < 20, (
+            f"a two-line program took {len(steps)} steps; the import machinery is being traced: {names}"
+        )
+        assert "_find_and_load_unlocked" not in names
+        assert "source_to_code" not in names
+
+    def test_a_callback_a_library_calls_back_into_is_still_the_users_code(self) -> None:
+        # The other side of the same rule. Skipping a library's internals must not skip the user's own
+        # function when the library calls it - `in_scope` has to look past the frames in between.
+        traced = Traced("def rank(v):\n    return -v\n\nxs = sorted([3, 1, 2], key=rank)\n")
+        calls = [e for e in traced.of("frame_push") if e["func"] == "rank"]
+        assert len(calls) == 3, f"the key function ran three times, the trace shows {len(calls)}"
+        assert all(e["kind"] == "user" for e in calls)
+
 
 # ---------------------------------------------------------------------------
 # performance
@@ -583,3 +641,433 @@ class TestPerformance:
             f"{small:.0f}µs/step at 100 objects vs {large:.0f}µs/step at 2000 — "
             "per-step cost must not scale with the heap"
         )
+
+
+
+class TestGettingEventsOutOfTheBuffer:
+    """Whether a written event has actually left the process.
+
+    Python block-buffers a pipe, and the tracer's only channel is its stdout. Without deliberate
+    flushing a run streamed nothing until 8 KB had piled up — so "live" was a lie for any small
+    program, and a program that stopped to ask a question deadlocked outright: the question sat in the
+    buffer, and the buffer could only be emptied by the program ending, which needed the answer to the
+    question nobody had been shown.
+    """
+
+    def emitter(self, clock: Any) -> tuple[Any, list[str]]:
+        import io
+
+        from flow_view_tracer.emit import Emitter
+
+        log: list[str] = []
+
+        class RecordingStream(io.StringIO):
+            def flush(self) -> None:  # type: ignore[override]
+                log.append("flush")
+
+        return Emitter(RecordingStream(), clock=clock), log
+
+    def test_a_blocking_read_is_pushed_out_immediately(self) -> None:
+        now = [0.0]
+        emitter, log = self.emitter(lambda: now[0])
+
+        emitter.emit("stdin_request", {"prompt": "name? "})
+
+        assert log == ["flush"], "the question must leave the process before the program waits on it"
+
+    def test_the_end_of_a_run_is_pushed_out_immediately(self) -> None:
+        now = [0.0]
+        emitter, log = self.emitter(lambda: now[0])
+        emitter.emit("run_end", {"status": "ok", "steps": 1, "duration_ms": 1.0})
+        assert log == ["flush"]
+
+    def test_an_ordinary_event_does_not_flush_on_every_step(self) -> None:
+        # Flushing per event would put a syscall in the hot path of the tracer for no visible gain.
+        now = [0.0]
+        emitter, log = self.emitter(lambda: now[0])
+        for _ in range(50):
+            emitter.emit("step_line", {"frame": 0, "line": 1, "path": "main.py"})
+        assert log == [], "no time passed, so there was nothing worth flushing for"
+
+    def test_ordinary_events_are_pushed_out_once_the_window_passes(self) -> None:
+        now = [0.0]
+        emitter, log = self.emitter(lambda: now[0])
+
+        emitter.emit("step_line", {"frame": 0, "line": 1, "path": "main.py"})
+        assert log == []
+
+        # Past the batching window: whatever is buffered should go now, even mid-run.
+        now[0] = Emitter_interval_seconds() * 2
+        emitter.emit("step_line", {"frame": 0, "line": 2, "path": "main.py"})
+        assert log == ["flush"], "a long run must stream, not arrive 8 KB at a time"
+
+    def test_a_long_quiet_run_keeps_streaming(self) -> None:
+        now = [0.0]
+        emitter, log = self.emitter(lambda: now[0])
+        for i in range(5):
+            now[0] += Emitter_interval_seconds() * 1.5
+            emitter.emit("step_line", {"frame": 0, "line": i + 1, "path": "main.py"})
+        assert len(log) == 5
+
+
+def Emitter_interval_seconds() -> float:
+    from flow_view_tracer.emit import Emitter
+
+    return Emitter.FLUSH_INTERVAL_MS / 1000.0
+
+
+class TestWhereAnAnswerCameFrom:
+    """The `source` on a recorded answer, which used to be hardcoded to "prefilled".
+
+    That quietly asserted no human was ever involved in any run. The adapter cannot know for certain —
+    prefilled input and a typed answer are the same bytes on the same pipe — so it times the read,
+    which separates the two by about three orders of magnitude. Under the server the label is replaced
+    by an exact one; this is the standalone behaviour, which is what a redirected or terminal stdin
+    gets.
+    """
+
+    def test_input_already_waiting_is_reported_as_prefilled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import io
+
+        monkeypatch.setattr(sys, "stdin", io.StringIO("Ada\n"))
+        traced = Traced('name = input("who? ")\nprint(name)\n')
+
+        answered = [e for e in traced.events if e["t"] == "stdin_response"]
+        assert [e["text"] for e in answered] == ["Ada"]
+        assert answered[0]["source"] == "prefilled"
+        assert answered[0]["waited_ms"] < 250, "reading a ready buffer is not waiting for a person"
+
+    def test_the_wait_is_recorded_so_the_label_can_be_checked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import io
+
+        monkeypatch.setattr(sys, "stdin", io.StringIO("1\n"))
+        traced = Traced("x = input()\n")
+
+        answered = [e for e in traced.events if e["t"] == "stdin_response"]
+        assert "waited_ms" in answered[0], (
+            "the measurement behind the label has to be visible, or the label has to be trusted"
+        )
+
+    def test_an_answer_that_took_human_time_is_reported_as_interactive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A read that does not return until time has passed is what a person looks like from in here.
+        import io
+        import time
+
+        class SlowStdin(io.StringIO):
+            def readline(self, *args: Any) -> str:  # type: ignore[override]
+                time.sleep(0.3)
+                return super().readline(*args)
+
+        monkeypatch.setattr(sys, "stdin", SlowStdin("32\n"))
+        traced = Traced("age = input()\n")
+
+        answered = [e for e in traced.events if e["t"] == "stdin_response"]
+        assert answered[0]["source"] == "interactive"
+        assert answered[0]["waited_ms"] >= 250
+
+
+
+class TestWaitingForAPersonIsNotTheProgramRunning:
+    """The wall-clock budget must not be spent by somebody reading the question.
+
+    `elapsed_ms` was raw wall clock, and the budget was checked against it, so a run was killed for
+    "timeout" when the only thing that had taken thirty seconds was a person deciding what to type.
+    The same number drives the elapsed clock in the UI, which was therefore reporting thinking time as
+    execution time.
+    """
+
+    def test_a_slow_answer_does_not_exhaust_the_budget(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import io
+        import time
+
+        class SlowStdin(io.StringIO):
+            def readline(self, *args: Any) -> str:  # type: ignore[override]
+                time.sleep(0.4)
+                return super().readline(*args)
+
+        monkeypatch.setattr(sys, "stdin", SlowStdin("7\n"))
+        # A budget smaller than the wait. The program itself does almost nothing, so the only way to
+        # exceed this is to charge it for the waiting.
+        traced = Traced("n = input()\nm = int(n) * 2\nprint(m)\n", limits=Limits(wall_ms=200))
+
+        assert traced.status == "ok", f"the run was cut short as {traced.status!r}"
+        printed = "".join(e["text"] for e in traced.events if e["t"] == "stdout")
+        assert "14" in printed
+
+    def test_the_elapsed_clock_excludes_the_wait(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import io
+        import time
+
+        class SlowStdin(io.StringIO):
+            def readline(self, *args: Any) -> str:  # type: ignore[override]
+                time.sleep(0.4)
+                return super().readline(*args)
+
+        monkeypatch.setattr(sys, "stdin", SlowStdin("1\n"))
+        traced = Traced("x = input()\ny = 1\n")
+
+        end = [e for e in traced.events if e["t"] == "run_end"][0]
+        assert end["duration_ms"] < 400, (
+            f"the clock read {end['duration_ms']}ms, which is mostly somebody thinking"
+        )
+        # The wait itself is not lost - it is recorded on the answer.
+        answered = [e for e in traced.events if e["t"] == "stdin_response"][0]
+        assert answered["waited_ms"] >= 400
+
+    def test_a_genuinely_slow_program_is_still_stopped(self) -> None:
+        # The discount must apply only to waiting on input, or the budget stops meaning anything.
+        traced = Traced(
+            "import time\nfor i in range(50):\n    time.sleep(0.02)\n", limits=Limits(wall_ms=100)
+        )
+        assert traced.status == "timeout"
+
+
+
+class TestSayingWhatTracingChanges:
+    """Where flow_view cannot show a program faithfully, it has to admit it.
+
+    Keeping object ids stable means holding a reference to every object the trace mentions, which means
+    the program's own `__del__` does not run when the program says it does — it runs at interpreter
+    shutdown, outside the traced region, so its output is missing from the trace rather than late.
+    Measured: `n = Noisy(); del n; print("after")` prints `gone / after the del` in plain Python and
+    only `after the del` here.
+
+    Silence would leave a reader concluding their finalizer never ran. See
+    docs/decisions/0005-object-identity-and-finalizers.md.
+    """
+
+    def test_a_finalizer_is_found_in_the_source(self) -> None:
+        from flow_view_tracer.analysis import SourceAnalysis
+
+        analysis = SourceAnalysis(
+            "main.py",
+            "class A:\n    def __del__(self):\n        pass\n\nclass B:\n    def __del__(self):\n"
+            "        pass\n",
+        )
+        assert analysis.finalizer_lines == [2, 6]
+
+    def test_an_ordinary_program_has_none(self) -> None:
+        from flow_view_tracer.analysis import SourceAnalysis
+
+        analysis = SourceAnalysis("main.py", "a = 1\ndef f(x):\n    return x\nprint(f(a))\n")
+        assert analysis.finalizer_lines == []
+
+    def test_a_method_merely_named_like_one_elsewhere_is_not_confused(self) -> None:
+        from flow_view_tracer.analysis import SourceAnalysis
+
+        analysis = SourceAnalysis("main.py", "def delete(self):\n    pass\n\n__delattr__ = 1\n")
+        assert analysis.finalizer_lines == []
+
+    def test_the_finalizer_really_does_not_run_inside_the_run(self) -> None:
+        # The claim the warning makes, checked rather than asserted in prose. If this ever starts
+        # failing, the warning has become a lie and the decision record needs revisiting - which would
+        # be good news.
+        traced = Traced(
+            'class Noisy:\n    def __del__(self):\n        print("gone")\n\n'
+            'n = Noisy()\ndel n\nprint("after")\n'
+        )
+        printed = "".join(e["text"] for e in traced.of("stdout"))
+        assert "after" in printed
+        assert "gone" not in printed, (
+            "the finalizer now runs inside the traced region, so the warning is no longer true"
+        )
+
+
+
+class TestTheHeapHoldsTheProgramsDataAndNothingElse:
+    """What the heap view is allowed to contain.
+
+    A program whose only sin was `from dataclasses import dataclass` arrived with **49 objects** and a
+    note saying the heap was beyond inspection limits. Among them: `Tracer`, `Emitter`, `Registry`,
+    `SourceAnalysis`, `TracerOptions`, `Limits` and `_FrameState` — flow_view's own insides, presented
+    as the user's data, having spent the object budget getting there.
+
+    The route was worth writing down, because nothing about it is obvious:
+
+        the user's module globals
+          -> __builtins__            (a *dict*, because the tracer module is imported, so it is walked)
+            -> input                 (replaced by the tracer's own bridge)
+              -> _tracer -> emitter -> registry -> ...
+
+    Two things were wrong. `_diff_locals` already skipped interpreter bindings, so `__builtins__` never
+    appeared as a *variable* — but `_roots_for` used it as a walk root, so a name the user could not see
+    flooded the view they could. And nothing stopped flow_view's own objects being walked once reached.
+    """
+
+    def test_a_dataclass_program_shows_only_its_own_objects(self) -> None:
+        traced = Traced(
+            "from dataclasses import dataclass\n"
+            "\n"
+            "\n"
+            "@dataclass\n"
+            "class Node:\n"
+            "    value: int\n"
+            "    next: object = None\n"
+            "\n"
+            "\n"
+            "a = Node(1)\n"
+            "b = Node(2)\n"
+            "a.next = b\n"
+        )
+        announced = [e["type_name"] for e in traced.of("obj_new")]
+        # The decorator the import bound, the class the program defined, and its two instances.
+        assert sorted(announced) == ["Node", "Node", "function", "type"], announced
+
+    @pytest.mark.parametrize(
+        ("label", "source", "expected"),
+        [
+            ("json", "import json\nd = {'a': 1}\ns = json.dumps(d)\n", ["dict", "module"]),
+            ("re", "import re\nhits = re.findall(r'x', 'xx')\n", ["list", "module"]),
+            ("no imports at all", "xs = [1, 2, 3]\nt = sum(xs)\n", ["list"]),
+        ],
+    )
+    def test_importing_a_library_costs_one_object(
+        self, label: str, source: str, expected: list[str]
+    ) -> None:
+        traced = Traced(source)
+        assert sorted(e["type_name"] for e in traced.of("obj_new")) == expected, label
+
+    def test_flow_view_never_appears_in_its_own_heap(self) -> None:
+        # The category, not just the one route. The frame filter already keeps flow_view out of its own
+        # trace as a *call*; there is no reason it should be able to appear as an *object* either.
+        traced = Traced(
+            "from dataclasses import dataclass\n"
+            "import json\n"
+            "\n"
+            "\n"
+            "@dataclass\n"
+            "class Thing:\n"
+            "    n: int\n"
+            "\n"
+            "\n"
+            "t = Thing(1)\n"
+            "s = json.dumps({'n': t.n})\n"
+            "x = input() if False else 'skipped'\n"
+        )
+        ours = {
+            "Tracer",
+            "Emitter",
+            "Registry",
+            "SourceAnalysis",
+            "TracerOptions",
+            "Limits",
+            "_FrameState",
+            "_InputBridge",
+            "_OutputProxy",
+        }
+        announced = {e["type_name"] for e in traced.of("obj_new")}
+        assert not (announced & ours), f"the tracer put itself in the heap: {announced & ours}"
+
+    def test_the_object_budget_is_not_spent_on_the_interpreter(self) -> None:
+        # The budget exists to protect the user from their own large data structures. It was being used
+        # up before their data was reached, so the note fired on a twelve-line program.
+        traced = Traced(
+            "from dataclasses import dataclass\n"
+            "\n"
+            "\n"
+            "@dataclass\n"
+            "class P:\n"
+            "    x: int\n"
+            "\n"
+            "\n"
+            "ps = [P(i) for i in range(3)]\n"
+        )
+        limits = [e["text"] for e in traced.of("note") if "inspection limits" in e["text"]]
+        assert limits == [], f"the heap budget was exhausted on a tiny program: {limits}"
+
+    def test_a_user_object_holding_a_library_object_still_shows_it(self) -> None:
+        # The rule is "not flow_view's own" and "not the interpreter's bindings", not "nothing from a
+        # library". Something the program deliberately holds is the program's data.
+        traced = Traced(
+            "import io\n"
+            "\n"
+            "\n"
+            "class Wrapper:\n"
+            "    def __init__(self):\n"
+            "        self.sink = io.StringIO()\n"
+            "\n"
+            "\n"
+            "w = Wrapper()\n"
+        )
+        announced = {e["type_name"] for e in traced.of("obj_new")}
+        assert "Wrapper" in announced
+        assert "StringIO" in announced, f"the object the program made is missing: {announced}"
+
+
+
+class TestALibrarysOwnExceptionsAreNotThePrograms:
+    """Ordinary calls raise and catch internally, and that is not the program's business.
+
+    `re.findall` misses its pattern cache and swallows a `KeyError`. Every one of those was reported as
+    an exception the program had raised — stamped with the *user's* file path and a line number from
+    `re/__init__.py`, so a two-line program was told it raised `KeyError` at line 285.
+
+    The second half was worse. Reporting it set the unwinding flag, and only a line event in a traced
+    frame clears that. A catch inside library code produces no such event, so the flag stayed set for the
+    rest of the frame: its last statement was skipped and its return was reported as an exception. This
+    program lost `hits` entirely —
+
+        import re
+        hits = re.findall(r'x', 'xx')
+
+    — and said it had exited by exception. On a program that raises nothing.
+    """
+
+    def test_a_library_catching_its_own_exception_is_silent(self) -> None:
+        traced = Traced("import re\nhits = re.findall(r'x', 'xx')\n")
+        assert traced.of("exception_raise") == []
+        assert traced.of("exception_uncaught") == []
+
+    def test_the_last_statement_is_not_lost_to_it(self) -> None:
+        traced = Traced("import re\nhits = re.findall(r'x', 'xx')\n")
+        # A list arrives as a heap reference, so the assignment existing at all is the point here.
+        assert traced.sets_of("hits"), "the program's last assignment went missing"
+        assert "ref" in traced.final("hits")
+
+    def test_the_frame_is_not_reported_as_having_failed(self) -> None:
+        traced = Traced("import re\nhits = re.findall(r'x', 'xx')\n")
+        reasons = [e["reason"] for e in traced.of("frame_pop")]
+        assert "exception" not in reasons, f"a program that raises nothing reported {reasons}"
+        assert traced.status == "ok"
+
+    def test_an_exception_that_reaches_the_program_is_still_reported(self) -> None:
+        # The point is attribution, not silence. settrace fires an event in every frame the exception
+        # passes through, so the one in the user's own frame is still there to report.
+        traced = Traced("n = int('not a number')\n")
+        raised = traced.one("exception_raise")
+        assert raised["type"] == "ValueError"
+        assert raised["line"] == 1
+        assert traced.status == "error"
+
+    def test_it_is_reported_at_the_users_line_not_the_librarys(self) -> None:
+        traced = Traced(
+            "import json\n"
+            "try:\n"
+            "    d = json.loads('{')\n"
+            "except Exception as e:\n"
+            "    why = type(e).__name__\n"
+        )
+        raised = traced.one("exception_raise")
+        assert raised["type"] == "JSONDecodeError"
+        # Line 3 is where the program called it. json/decoder.py is where it happened, and that is not
+        # a line the reader can look at.
+        assert raised["line"] == 3
+        assert traced.of("exception_catch")
+        assert traced.final("why")["prim"] == "JSONDecodeError"
+
+    def test_the_users_own_raise_and_catch_still_work(self) -> None:
+        traced = Traced(
+            "try:\n    raise ValueError('mine')\nexcept ValueError as e:\n    caught = str(e)\n"
+        )
+        assert traced.one("exception_raise")["line"] == 2
+        assert traced.one("exception_catch")["line"] == 3
+        assert traced.final("caught")["prim"] == "mine"
+        assert traced.status == "ok"

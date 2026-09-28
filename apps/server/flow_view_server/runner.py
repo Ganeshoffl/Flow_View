@@ -24,6 +24,7 @@ than implying protection it does not have.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import os
 import shutil
@@ -36,7 +37,30 @@ from typing import Any, AsyncIterator, Callable
 
 __all__ = ["RunLimits", "RunRequest", "Runner", "platform_guards"]
 
-ADAPTERS = Path(__file__).resolve().parents[3] / "adapters" / "python"
+def _adapters_root() -> Path:
+    """Where the Python tracer lives.
+
+    Installed, it is a top-level package beside this one; in a checkout it is under `adapters/python`.
+    The old answer was `parents[3]`, which is the repo root only in a checkout — so an installed
+    flow_view looked for the tracer in whatever directory happened to sit three levels above
+    site-packages, found nothing, and every run failed.
+
+    Resolved through the import system rather than by guessing, because that is the one thing that
+    knows where a package ended up.
+    """
+    spec = importlib.util.find_spec("flow_view_tracer")
+    if spec is not None and spec.origin:
+        return Path(spec.origin).resolve().parent.parent
+    return Path(__file__).resolve().parents[3] / "adapters" / "python"
+
+
+ADAPTERS = _adapters_root()
+
+#: How long a program may sit on an unanswered question before the run is given up on, in seconds.
+#:
+#: Generous, because the alternative is ending a run while its user is still reading. Finite, because
+#: a closed tab must not leave a traced program parked on a read that will never be answered.
+UNANSWERED_DEADLINE = 15 * 60
 
 try:  # POSIX only; absent on Windows.
     import resource
@@ -142,6 +166,10 @@ class Runner:
         self._workdir: str | None = None
         self._guards = platform_guards()
         self._closed = False
+        # How many lines were supplied up front. The pipe is first-in-first-out, so the first this
+        # many answers the program reads are the prefilled ones and everything after was typed by a
+        # person. See _label_stdin_source.
+        self._prefilled_lines = 0
 
     @property
     def guards(self) -> dict[str, bool]:
@@ -197,8 +225,17 @@ class Runner:
 
         if self.request.stdin:
             # Prefilled input, so the run produces a fully scrubbable trace with no human involved.
+            #
+            # The trailing newline is not cosmetic. `input()` reads a *line*, so text that does not end
+            # in one leaves the program blocked on a read that can never complete: typing `Ada` into
+            # the input box and pressing Run hung the run forever, with the UI showing "running".
+            # `send_stdin` below always did this; this path did not.
+            text = self.request.stdin
+            if not text.endswith("\n"):
+                text += "\n"
+            self._prefilled_lines = text.count("\n")
             assert self._process.stdin is not None
-            self._process.stdin.write(self.request.stdin.encode("utf-8"))
+            self._process.stdin.write(text.encode("utf-8"))
             await self._process.stdin.drain()
 
     async def events(self) -> AsyncIterator[dict[str, Any]]:
@@ -212,15 +249,29 @@ class Runner:
 
         wall_deadline = self.request.limits.wall_ms / 1000 + 5
         stream = self._process.stdout
+        # Silence means something has gone wrong — unless the program is waiting for input, in which
+        # case silence is exactly what it should be doing. Applying the execution deadline then would
+        # end a run for being patient, and blame the program for the time a person spent thinking.
+        #
+        # It is still bounded, just far more loosely, so an abandoned tab cannot leave a traced program
+        # parked on a read forever.
+        awaiting_input = False
 
         while True:
             try:
-                line = await asyncio.wait_for(stream.readline(), timeout=wall_deadline)
+                line = await asyncio.wait_for(
+                    stream.readline(),
+                    timeout=UNANSWERED_DEADLINE if awaiting_input else wall_deadline,
+                )
             except asyncio.TimeoutError:
                 yield {
                     "t": "note",
                     "level": "warn",
-                    "text": "The program stopped responding and was ended.",
+                    "text": (
+                        "Nobody answered, so the run was ended."
+                        if awaiting_input
+                        else "The program stopped responding and was ended."
+                    ),
                 }
                 await self.stop()
                 return
@@ -238,13 +289,40 @@ class Runner:
             if not text:
                 continue
             try:
-                yield json.loads(text)
+                event = json.loads(text)
             except json.JSONDecodeError:
                 yield {
                     "t": "note",
                     "level": "warn",
                     "text": "An unreadable line arrived from the tracer and was skipped.",
                 }
+                continue
+            kind = event.get("t")
+            if kind == "stdin_request":
+                awaiting_input = True
+            elif kind == "stdin_response":
+                awaiting_input = False
+                self._label_stdin_source(event)
+            yield event
+
+    def _label_stdin_source(self, event: dict[str, Any]) -> None:
+        """Say where an answer actually came from.
+
+        The tracer cannot know. From inside the traced program, input supplied up front and input
+        typed by a person are the same bytes on the same pipe; all it can do is time the read, which
+        mislabels anything answered by a machine faster than a human could. Here the answer is known
+        exactly, because this is the end that supplied it: a pipe is first-in-first-out, so the first
+        `_prefilled_lines` answers are the prefilled ones and every answer after them was typed while
+        the program waited.
+
+        The measured `waited_ms` the tracer recorded is left alone. It is a fact, and it is the more
+        interesting one for anyone asking how long a run sat idle.
+        """
+        if self._prefilled_lines > 0:
+            self._prefilled_lines -= 1
+            event["source"] = "prefilled"
+        else:
+            event["source"] = "interactive"
 
     async def send_stdin(self, text: str) -> None:
         """Answer a blocking read in the traced program."""

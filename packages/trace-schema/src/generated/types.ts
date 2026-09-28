@@ -173,7 +173,10 @@ export type FreeVia =
 
 export const FREEVIA_VALUES = ["free", "delete", "delete_array", "scope_exit"] as const satisfies readonly FreeVia[];
 
-/** Whether input came from a human at run time or was supplied up front. */
+/**
+ * Whether input came from a human at run time or was supplied up front. Measured from how long
+ * the read blocked, not assumed.
+ */
 export type StdinSource =
   | "interactive"
   | "prefilled";
@@ -640,12 +643,14 @@ export interface StdinRequestEvent extends EventBase {
 
 /**
  * `stdin_response` — Input that was supplied. Recorded so replay is deterministic without a
- * human.
+ * human. waited_ms is how long the program actually sat on the read, and is what source is
+ * derived from.
  */
 export interface StdinResponseEvent extends EventBase {
   readonly t: "stdin_response";
   readonly text: string;
   readonly source: StdinSource;
+  readonly waited_ms?: number;
 }
 
 /** `exception_raise` — An exception was raised. */
@@ -713,6 +718,13 @@ export interface CollapseEvent extends EventBase {
   readonly from_seq: number;
   readonly to_seq: number;
   readonly iterations: number;
+  /**
+   * Index of the first folded iteration. Together with to_iter this is what expand-on-demand
+   * re-runs; seq numbers do not survive into a re-run.
+   */
+  readonly from_iter?: number;
+  /** Index of the last folded iteration. */
+  readonly to_iter?: number;
   readonly effects: CollapseEffect[];
   readonly metrics?: Record<string, number>;
 }

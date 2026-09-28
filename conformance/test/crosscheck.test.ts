@@ -19,7 +19,7 @@
  * - the same state always lays out identically.
  */
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -37,6 +37,8 @@ import {
   describeDifferences,
 } from "@flow-view/trace-store";
 
+import { listTraceFiles } from "./traces.js";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const SOURCES = [
   { label: "conformance", dir: join(here, "..", ".traces") },
@@ -52,7 +54,7 @@ function loadAll(): Case[] {
   const cases: Case[] = [];
   for (const source of SOURCES) {
     if (!existsSync(source.dir)) continue;
-    for (const file of readdirSync(source.dir).filter((name) => name.endsWith(".json")).sort()) {
+    for (const file of listTraceFiles(source.dir)) {
       cases.push({
         name: `${source.label}/${file.replace(/\.json$/, "")}`,
         trace: JSON.parse(readFileSync(join(source.dir, file), "utf8")) as Trace,

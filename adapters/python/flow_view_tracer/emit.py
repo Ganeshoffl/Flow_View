@@ -159,7 +159,24 @@ class Emitter:
         "_stopped",
         "_stop_reason",
         "_notes_sent",
+        "_last_flush",
+        "_idle_ms",
+        "_collapser",
     )
+
+    #: How long a finished event may sit in the buffer before it is pushed out, in milliseconds.
+    #:
+    #: Matched to the server's batching window: flushing more often buys nothing the viewer can see,
+    #: and flushing less often is what "live" stops meaning.
+    FLUSH_INTERVAL_MS = 16.0
+
+    #: Events after which the buffer is emptied immediately, whatever the interval says.
+    #:
+    #: `stdin_request` is the one that matters. Python block-buffers a pipe, so a program that stopped
+    #: to ask a question left its question in an 8 KB buffer that nothing would empty until the
+    #: program ended — and it could not end, because it was waiting for the answer to the question
+    #: nobody had been shown. The UI sat on "running" while the run was deadlocked.
+    URGENT = frozenset({"stdin_request", "run_end", "note", "error"})
 
     def __init__(
         self,
@@ -168,6 +185,7 @@ class Emitter:
         limits: Limits | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         clock: Callable[[], float] | None = None,
+        collapser: Any = None,
     ) -> None:
         if stream is None and on_event is None:
             raise ValueError("an emitter needs either a stream or an on_event callback")
@@ -197,11 +215,30 @@ class Emitter:
         self._stopped = False
         self._stop_reason: str | None = None
         self._notes_sent: set[str] = set()
+        self._last_flush = self._started
+        self._idle_ms = 0.0
+        self._collapser = collapser
+        if collapser is not None and getattr(collapser, "_seq", None) is not None:
+            # The collapser stamps from_seq/to_seq onto the spans it folds, and only this knows the
+            # numbering.
+            collapser._seq = lambda: self.seq
 
     # -- timing ------------------------------------------------------------
 
     def elapsed_ms(self) -> float:
-        return (self._clock() - self._started) * 1000.0
+        """How long the *program* has been running.
+
+        Time spent blocked waiting for a person to type an answer is not the program's time, and
+        charging it to the program was wrong twice over: the wall-clock budget killed runs for
+        "timeout" when the only thing that had taken 30 seconds was somebody reading the question, and
+        the elapsed clock in the UI reported thinking time as execution time.
+        """
+        return (self._clock() - self._started) * 1000.0 - self._idle_ms
+
+    def discount_idle(self, ms: float) -> None:
+        """Exclude a stretch of waiting on a human from the program's elapsed time."""
+        if ms > 0:
+            self._idle_ms += ms
 
     @property
     def stopped(self) -> bool:
@@ -214,7 +251,30 @@ class Emitter:
     # -- emission ----------------------------------------------------------
 
     def emit(self, kind: str, payload: dict[str, Any] | None = None) -> None:
-        """Write one event, assigning ``seq``, ``ms`` and — where applicable — ``step``."""
+        """Write one event, assigning ``seq``, ``ms`` and — where applicable — ``step``.
+
+        With a collapser attached, events pass through it first. It happens *before* numbering on
+        purpose: a folded event never receives a ``seq`` or a ``step``, so both stay dense and a
+        collapsed trace is numbered as though the folded iterations had never been separate steps —
+        which is the point of folding them.
+        """
+        if self._stopped:
+            return
+        if self._collapser is not None:
+            for out_kind, out_payload in self._collapser.feed(kind, payload):
+                self._emit_now(out_kind, out_payload)
+            return
+        self._emit_now(kind, payload)
+
+    def drain_collapser(self) -> None:
+        """Emit anything the collapser is still holding. Called once, as the run ends."""
+        if self._collapser is None:
+            return
+        collapser, self._collapser = self._collapser, None
+        for kind, payload in collapser.drain():
+            self._emit_now(kind, payload)
+
+    def _emit_now(self, kind: str, payload: dict[str, Any] | None = None) -> None:
         if self._stopped:
             return
         event: dict[str, Any] = {"seq": self.seq, "t": kind}
@@ -226,6 +286,17 @@ class Emitter:
             event["step"] = self.step
             self.step += 1
         self._write(event)
+
+        # Get it out of the buffer. See URGENT and FLUSH_INTERVAL_MS above: without this the trace
+        # only reached the viewer 8 KB at a time, so nothing was live and a blocking read deadlocked.
+        if kind in self.URGENT:
+            self._flush()
+            self._last_flush = self._clock()
+        else:
+            now = self._clock()
+            if (now - self._last_flush) * 1000.0 >= self.FLUSH_INTERVAL_MS:
+                self._flush()
+                self._last_flush = now
 
     def note(self, level: str, text: str, *, once: bool = True) -> None:
         """Surface a diagnostic to the user.
