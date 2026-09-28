@@ -9,5 +9,8 @@
     "stdout": "{\"a\": 1}\n",
     "has_library_frame": true,
     "no_steps_inside_library": true
+  },
+  "not_applicable": {
+    "javascript": "JavaScript's standard library is native code, so a call into it has no frames to hide in the first place. `JSON.stringify` never enters instrumented source, which means the property this case tests holds trivially and cannot be observed: there is no library frame to report. A JavaScript case worth writing here would need an imported package, which is a different thing to test and belongs with module support."
   }
 }

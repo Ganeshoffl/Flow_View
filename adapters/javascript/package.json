@@ -1,0 +1,22 @@
+{
+  "name": "@flow-view/adapter-javascript",
+  "version": "0.1.0",
+  "description": "JavaScript execution adapter: instruments source and emits the universal trace",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./instrument": "./src/instrument.js",
+    "./runtime": "./src/runtime.js",
+    "./collapse": "./src/collapse.js",
+    "./stdin": "./src/stdin.js",
+    "./cli": "./src/cli.js"
+  },
+  "dependencies": {
+    "acorn": "^8.12.0",
+    "acorn-walk": "^8.3.0",
+    "magic-string": "^0.30.0"
+  }
+}

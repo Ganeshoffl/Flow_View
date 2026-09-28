@@ -48,6 +48,24 @@ SOURCE_FILES = {
 }
 
 
+#: Expectations a case is allowed to restate for one language, and nothing else.
+#:
+#: Every entry here is a piece of a *language's surface* rather than a fact about execution: the exact text
+#: its print statement produces, the name its runtime happens to give an error. Python prints ``None`` where
+#: JavaScript prints ``null``, and Python's ``IndexError`` has no JavaScript counterpart. Pretending
+#: otherwise would mean writing programs that contort themselves to produce identical text, which tests the
+#: contortion rather than the adapter.
+#:
+#: What is deliberately *not* here: counts, final values, control flow, call results, heap structure. An
+#: adapter that needed one of those restated would be reporting different behaviour, and noticing that is
+#: the entire reason this corpus exists. The runner refuses such an override rather than honouring it, so
+#: the fence cannot be quietly stepped over later.
+SURFACE_KEYS = frozenset({"stdout", "stderr"})
+
+#: Keys whose *sub-fields* may be restated, listing exactly which ones.
+SURFACE_SUBKEYS: dict[str, frozenset[str]] = {"exceptions": frozenset({"uncaught"})}
+
+
 @dataclass
 class Case:
     """One program plus what every adapter must report about it."""
@@ -57,6 +75,35 @@ class Case:
     description: str
     concepts: list[str]
     expect: dict[str, Any]
+    per_language: dict[str, dict[str, Any]] = field(default_factory=dict)
+    not_applicable: dict[str, str] = field(default_factory=dict)
+
+    def expect_for(self, language: str) -> dict[str, Any]:
+        """The shared expectations, with this language's surface restated over them."""
+        override = self.per_language.get(language)
+        if not override:
+            return self.expect
+
+        merged = dict(self.expect)
+        for key, value in override.items():
+            if key in SURFACE_KEYS:
+                merged[key] = value
+            elif key in SURFACE_SUBKEYS:
+                refused = sorted(set(value) - SURFACE_SUBKEYS[key])
+                if refused:
+                    raise ValueError(
+                        f"{self.name}: {language} may not restate {key}.{refused} - only "
+                        f"{sorted(SURFACE_SUBKEYS[key])} is language surface. The rest describes what "
+                        f"happened, and every adapter owes the same answer."
+                    )
+                merged[key] = {**(self.expect.get(key) or {}), **value}
+            else:
+                raise ValueError(
+                    f"{self.name}: {language} may not restate {key!r}. Only "
+                    f"{sorted(SURFACE_KEYS)} and {sorted(SURFACE_SUBKEYS)} sub-keys are language "
+                    f"surface; everything else is behaviour every adapter must agree on."
+                )
+        return merged
 
     def source_for(self, language: str) -> str | None:
         filename = SOURCE_FILES.get(language)
@@ -83,6 +130,8 @@ def load_cases() -> list[Case]:
                 description=meta.get("description", ""),
                 concepts=meta.get("concepts", []),
                 expect=meta.get("expect", {}),
+                per_language=meta.get("expect_per_language", {}),
+                not_applicable=meta.get("not_applicable", {}),
             )
         )
     return cases
@@ -188,8 +237,9 @@ class Result:
 
 def verify(case: Case, trace: Trace) -> Result:
     """Check one trace against one case."""
-    result = Result(case.name, trace.session.get("language", "?"))
-    expect = case.expect
+    language = trace.session.get("language", "?")
+    result = Result(case.name, language)
+    expect = case.expect_for(language)
 
     shape = validate_trace(trace.document)
     result.check(shape.valid, f"schema: {shape.describe(3)}")
@@ -483,9 +533,9 @@ def _check_heap(expect: dict[str, Any], trace: Trace, result: Result) -> None:
             f"mutations: expected {expect['mutation_count']}, got {len(mutations)}",
         )
 
-    if expect.get("has_self_type_reference"):
+    if expect.get("has_self_type_reference") or "self_type_reference_count" in expect:
         by_id = {e["obj"]: e for e in trace.of("obj_new")}
-        found = False
+        links = set()
         for event in trace.of("obj_set"):
             value = event.get("value", {})
             if "ref" not in value:
@@ -493,9 +543,20 @@ def _check_heap(expect: dict[str, Any], trace: Trace, result: Result) -> None:
             owner = by_id.get(event["obj"])
             target = by_id.get(value["ref"])
             if owner and target and owner["type_name"] == target["type_name"]:
-                found = True
-                break
-        result.check(found, "expected an object referring to another of its own type")
+                links.add((event["obj"], event["key"], value["ref"]))
+
+        if expect.get("has_self_type_reference"):
+            result.check(links, "expected an object referring to another of its own type")
+
+        # Counting the links, not merely finding one, is what makes a chain testable. An adapter whose heap
+        # walk stops following a reference once it has seen it still reports the *first* link and looks
+        # correct; what it loses is every link after that, which is the whole structure.
+        if "self_type_reference_count" in expect:
+            result.check(
+                len(links) == expect["self_type_reference_count"],
+                f"links between objects of one type: "
+                f"expected {expect['self_type_reference_count']}, got {len(links)}",
+            )
 
 
 def _check_stdin(expect: dict[str, Any], trace: Trace, result: Result) -> None:
@@ -626,7 +687,85 @@ def run_python(case: Case) -> Trace:
 
 #: Adapters that exist. A language is added here once its adapter is built, and the same corpus then
 #: governs it with no new expectations to write.
-ADAPTERS: dict[str, Callable[[Case], Trace]] = {"python": run_python}
+def run_javascript(case: Case) -> Trace:
+    """Trace a program with the JavaScript adapter, by running its CLI.
+
+    A subprocess rather than an in-process call, because that is how the server runs it too. Testing it
+    any other way would leave the path the product actually takes unexercised.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    source = case.source_for("javascript")
+    assert source is not None
+
+    node = shutil.which("node")
+    if node is None:
+        raise RuntimeError("node is not on PATH, so the JavaScript adapter cannot run")
+
+    # The limits the case asks for, not whatever the adapter defaults to. A case that declares a budget of
+    # 400 steps is testing what happens at 400 steps; running it at the default 200,000 still ends in
+    # `step_limit` and still looks like a pass, while having tested something the case never asked about.
+    limits_in = case.expect.get("limits") or {}
+    max_steps = int(limits_in.get("max_steps", 200_000))
+    wall_ms = int(limits_in.get("wall_ms", 30_000))
+
+    cli = REPO / "adapters" / "javascript" / "src" / "cli.js"
+    with tempfile.TemporaryDirectory(prefix="flow_view_js_") as workdir:
+        program = Path(workdir) / "main.js"
+        program.write_text(source, encoding="utf-8")
+        completed = subprocess.run(
+            [
+                node,
+                str(cli),
+                "--source",
+                str(program),
+                "--max-steps",
+                str(max_steps),
+                "--wall-ms",
+                str(wall_ms),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            input=case.expect.get("stdin") or "",
+        )
+
+    header: dict[str, Any] = {}
+    events: list[dict[str, Any]] = []
+    for line in completed.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if "session" in parsed:
+            header = parsed
+        else:
+            events.append(parsed)
+
+    if not header:
+        raise RuntimeError(
+            f"the JavaScript adapter produced no header.\nstderr:\n{completed.stderr[-2000:]}"
+        )
+
+    # The adapter reports how the run ended in `run_end`, which is the same place the Python adapter's
+    # status comes from - it just happens to return it directly there.
+    ended = [e for e in events if e.get("t") == "run_end"]
+    status = ended[-1].get("status", "error") if ended else "error"
+
+    return Trace(
+        schema=header.get("schema", ""),
+        session=header.get("session", {}),
+        events=events,
+        status=status,
+    )
+
+
+ADAPTERS: dict[str, Callable[[Case], Trace]] = {"python": run_python, "javascript": run_javascript}
 
 
 def write_trace(case: Case, language: str, trace: Trace) -> Path:
@@ -669,6 +808,36 @@ def write_manifest(written: list[str]) -> None:
     )
 
 
+def coverage_report(cases: list[Case]) -> list[str]:
+    """What each adapter does *not* cover, and whether it has said why.
+
+    A case with no source file for a language simply does not run, and nothing in the pass count reflects
+    that. Nine of sixteen cases passing reads exactly like sixteen of sixteen if the other seven were never
+    attempted, so the absences are printed next to the results. A gap with a stated reason is a decision; a
+    gap without one is work not done yet, and the difference should not have to be reconstructed by
+    comparing directory listings.
+    """
+    lines: list[str] = []
+    for language in ADAPTERS:
+        absent = [case for case in cases if case.source_for(language) is None]
+        if not absent:
+            lines.append(f"{language}: covers all {len(cases)} cases")
+            continue
+
+        explained = [case for case in absent if language in case.not_applicable]
+        unexplained = [case for case in absent if language not in case.not_applicable]
+        lines.append(
+            f"{language}: covers {len(cases) - len(absent)}/{len(cases)} cases"
+            f" ({len(explained)} not applicable, {len(unexplained)} not yet written)"
+        )
+        for case in explained:
+            reason = case.not_applicable[language]
+            lines.append(f"    - {case.name}: not applicable. {reason}")
+        for case in unexplained:
+            lines.append(f"    - {case.name}: no {SOURCE_FILES[language]} yet, and no reason recorded")
+    return lines
+
+
 def run_all(*, write: bool = True) -> list[Result]:
     results: list[Result] = []
     written: list[str] = []
@@ -694,6 +863,11 @@ def main() -> int:
         print(result.describe())
     print()
     print(f"{len(results) - len(failed)}/{len(results)} passed")
+    print()
+    print("coverage")
+    for line in coverage_report(load_cases()):
+        print(f"  {line}")
+    print()
     if failed:
         return 1
     print(f"traces written to {TRACE_OUT.relative_to(REPO)} for the replay suite")

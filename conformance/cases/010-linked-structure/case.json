@@ -9,6 +9,7 @@
     "status": "ok",
     "stdout": "3\n",
     "min_objects": 3,
-    "has_self_type_reference": true
+    "has_self_type_reference": true,
+    "self_type_reference_count": 2
   }
 }

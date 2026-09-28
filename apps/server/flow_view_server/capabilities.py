@@ -49,6 +49,67 @@ def _tool_version(command: list[str]) -> str | None:
     return output.splitlines()[0] if output else None
 
 
+#: The oldest Node that can run the adapter. It uses `--permission`, which arrived in 20 and is the only
+#: sandbox node offers; on anything older a run would work but be unguarded, and silently so.
+MINIMUM_NODE_MAJOR = 20
+
+
+def _javascript_support() -> LanguageSupport:
+    """Whether JavaScript can actually be traced here.
+
+    Two separate things have to be true, and the old entry conflated them: node has to be installed, and the
+    adapter has to be present. It reported "the adapter is not built yet" even on a machine with no node at
+    all, which is the wrong remedy for that machine.
+    """
+    from .runner import javascript_adapter_root
+
+    node = shutil.which("node")
+    if node is None:
+        return LanguageSupport(
+            language="javascript",
+            available=False,
+            reason="Node.js is not installed, or not on PATH.",
+            remedy=f"Install Node {MINIMUM_NODE_MAJOR} or newer, then restart flow_view.",
+        )
+
+    version = _tool_version([node, "--version"])
+    major = _major_version(version)
+    if major is not None and major < MINIMUM_NODE_MAJOR:
+        return LanguageSupport(
+            language="javascript",
+            available=False,
+            version=version,
+            reason=(
+                f"Node {version} is too old: tracing JavaScript needs {MINIMUM_NODE_MAJOR} or newer for "
+                "the permission model that sandboxes a run."
+            ),
+            remedy=f"Upgrade to Node {MINIMUM_NODE_MAJOR} or newer.",
+        )
+
+    if javascript_adapter_root() is None:
+        return LanguageSupport(
+            language="javascript",
+            available=False,
+            version=version,
+            reason="The JavaScript adapter is not installed alongside this server.",
+            remedy="Run flow_view from a checkout, where adapters/javascript is present.",
+        )
+
+    return LanguageSupport(language="javascript", available=True, version=version)
+
+
+def _major_version(version: str | None) -> int | None:
+    """The major number out of something like `v22.23.2`, or None if it does not look like one."""
+    if not version:
+        return None
+    digits = ""
+    for char in version.lstrip("v"):
+        if not char.isdigit():
+            break
+        digits += char
+    return int(digits) if digits else None
+
+
 @lru_cache(maxsize=1)
 def language_support() -> tuple[LanguageSupport, ...]:
     """Probe every language flow_view knows about."""
@@ -60,16 +121,7 @@ def language_support() -> tuple[LanguageSupport, ...]:
         )
     ]
 
-    node = shutil.which("node")
-    support.append(
-        LanguageSupport(
-            language="javascript",
-            available=False,
-            version=_tool_version([node, "--version"]) if node else None,
-            reason="The JavaScript adapter is not built yet.",
-            planned="phase 7",
-        )
-    )
+    support.append(_javascript_support())
 
     has_gcc = shutil.which("gcc") or shutil.which("cc")
     has_gpp = shutil.which("g++") or shutil.which("clang++")

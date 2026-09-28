@@ -74,11 +74,11 @@ heading "5. typescript"
 run "every suite" pnpm vitest run
 
 heading "6. source hygiene"
+# Looks at code, not at strings or comments. `console.log` is how a JavaScript program prints, so the
+# sample programs in the corpus and in the tests contain it on purpose; the grep this replaces reported
+# eight of those and never scanned a `.js` file, which is where a stray one would actually matter.
 run "no leftover debugging" bash -c '
-  ! grep -rn --include="*.ts" --include="*.tsx" --include="*.py" \
-      -E "console\.log\(|breakpoint\(\)|import pdb|FIXME|XXX:" \
-      adapters apps packages conformance scripts 2>/dev/null \
-    | grep -v "generated/" | grep -v node_modules | grep -v "\.venv"'
+  "$PYTHON" scripts/_hygiene.py adapters apps packages conformance scripts'
 run "no unintended non-ascii" bash -c '
   # Built output mirrors its sources, so only sources are checked. Typographic characters used
   # deliberately in prose are allowed; anything else is usually a slip.

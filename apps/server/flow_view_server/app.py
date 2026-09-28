@@ -26,7 +26,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .capabilities import capabilities
+from .capabilities import capabilities, language_support
 from .runner import RunLimits, RunRequest, Runner
 
 log = logging.getLogger("flow_view")
@@ -199,11 +199,24 @@ async def _serve(websocket: WebSocket, session: Session) -> None:
 
 async def _start_run(websocket: WebSocket, session: Session, message: dict[str, Any]) -> None:
     language = message.get("language", "python")
-    if language != "python":
+
+    # Asked of the capability probe rather than compared against a literal. This used to test
+    # `language != "python"` and announce that Python was the only adapter built, which meant the sentence
+    # the user read was maintained in a different place from the fact it described — and went stale the
+    # moment a second adapter landed. The probe already knows what is missing and how to fix it.
+    entry = next((item for item in language_support() if item.language == language), None)
+    if entry is None or not entry.available:
+        detail = " ".join(
+            part for part in [entry.reason if entry else None, entry.remedy if entry else None] if part
+        )
+        available = [item.language for item in language_support() if item.available]
         await websocket.send_json(
             {
                 "type": "error",
-                "message": f"{language} is not available yet. Python is the only adapter built so far.",
+                "message": (
+                    f"{language} is not available yet. {detail}".strip()
+                    + f" Available here: {', '.join(available)}."
+                ),
             }
         )
         return

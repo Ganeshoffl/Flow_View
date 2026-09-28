@@ -1,3 +1,6 @@
 packages:
   - "packages/*"
   - "apps/*"
+  # The JavaScript adapter. Plain ESM with no build step, because it has to run unchanged in a
+  # browser worker for the Lite profile as well as under Node here.
+  - "adapters/javascript"

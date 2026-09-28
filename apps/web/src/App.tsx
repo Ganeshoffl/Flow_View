@@ -24,6 +24,7 @@ import {
   VariablesPane,
 } from "@flow-view/renderers";
 import { TraceStore } from "@flow-view/trace-store";
+import type { Language } from "@flow-view/trace-schema";
 
 import { Editor } from "./Editor.js";
 import { RunControls } from "./RunControls.js";
@@ -31,7 +32,15 @@ import { useLiveRun } from "./useLiveRun.js";
 
 type Mode = "run" | "examples";
 
-const STARTER = `def fact(n):
+/**
+ * The program each language opens with.
+ *
+ * The same program in every language, deliberately: recursion, a loop, a list being built. Switching
+ * language should show you the same idea in a different spelling rather than a different example, so the
+ * thing you are comparing is the language and not the program.
+ */
+const STARTERS: Partial<Record<Language, string>> = {
+  python: `def fact(n):
     if n <= 1:
         return 1
     return n * fact(n - 1)
@@ -41,7 +50,24 @@ for i in range(1, 6):
     values.append(fact(i))
 
 print(values)
-`;
+`,
+  javascript: `function fact(n) {
+  if (n <= 1) {
+    return 1;
+  }
+  return n * fact(n - 1);
+}
+
+const values = [];
+for (let i = 1; i < 6; i++) {
+  values.push(fact(i));
+}
+
+console.log(values);
+`,
+};
+
+const FALLBACK_STARTER = "";
 
 export function App() {
   const [mode, setMode] = useState<Mode>("run");
@@ -93,8 +119,32 @@ interface ModeProps {
 
 function LiveMode({ highlighted, onHighlight }: ModeProps) {
   const live = useLiveRun();
-  const [source, setSource] = useState(STARTER);
+  const [language, setLanguage] = useState<Language>("python");
+  const [source, setSource] = useState(STARTERS.python ?? FALLBACK_STARTER);
   const [stdin, setStdin] = useState("");
+
+  // The language of the trace being *shown*, which is not necessarily the one selected: switching the
+  // selector while a JavaScript run is on screen must not relabel it as Python and re-highlight it with the
+  // wrong grammar. The trace says what it is.
+  const tracedLanguage = (live.store.getSession()?.language as Language | undefined) ?? language;
+
+  /**
+   * Switching language replaces the program, but only when it has not been touched.
+   *
+   * Discarding someone's work because they browsed the dropdown would be unforgivable; leaving Python source
+   * in the box after choosing JavaScript is merely unhelpful. So the starter is swapped when the editor still
+   * holds a starter, and left alone otherwise.
+   */
+  const chooseLanguage = useCallback(
+    (next: Language) => {
+      setLanguage(next);
+      const starters = Object.values(STARTERS);
+      if (starters.includes(source)) {
+        setSource(STARTERS[next] ?? FALLBACK_STARTER);
+      }
+    },
+    [source],
+  );
 
   // Which of the editor and the traced code occupies the left pane.
   //
@@ -106,10 +156,10 @@ function LiveMode({ highlighted, onHighlight }: ModeProps) {
     setEditing(false);
     live.run({
       source,
-      language: "python",
+      language,
       stdin: stdin.trim() ? stdin : undefined,
     });
-  }, [live, source, stdin]);
+  }, [live, source, language, stdin]);
 
   // The code pane shows the source the *running* trace belongs to, not whatever has been typed
   // since. Highlighting line 4 of a program the user has edited underneath would point at the wrong
@@ -127,6 +177,8 @@ function LiveMode({ highlighted, onHighlight }: ModeProps) {
       <RunControls
         live={live}
         onRun={run}
+        language={language}
+        onLanguageChange={chooseLanguage}
         stdin={stdin}
         onStdinChange={setStdin}
         editing={editing}
@@ -137,11 +189,11 @@ function LiveMode({ highlighted, onHighlight }: ModeProps) {
       <main className="fv-main">
         <div className="fv-area is-code">
           {showingCode ? (
-            <CodePane store={live.store} source={tracedSource} language="python" />
+            <CodePane store={live.store} source={tracedSource} language={tracedLanguage} />
           ) : (
             <Editor
               value={source}
-              language="python"
+              language={language}
               onChange={setSource}
               onRun={run}
               disabled={live.status === "running"}
@@ -149,12 +201,12 @@ function LiveMode({ highlighted, onHighlight }: ModeProps) {
           )}
         </div>
         <div className="fv-area is-stack">
-          <StackPane store={live.store} language="python" />
+          <StackPane store={live.store} language={tracedLanguage} />
         </div>
         <div className="fv-area is-vars">
           <VariablesPane
             store={live.store}
-            language="python"
+            language={tracedLanguage}
             highlightedObject={highlighted}
             onHighlightObject={onHighlight}
           />
@@ -162,20 +214,20 @@ function LiveMode({ highlighted, onHighlight }: ModeProps) {
         <div className="fv-area is-heap">
           <HeapPane
             store={live.store}
-            language="python"
+            language={tracedLanguage}
             highlightedObject={highlighted}
             onHighlightObject={onHighlight}
           />
         </div>
         <div className="fv-area is-narration">
-          <NarrationPane store={live.store} language={"python"} />
+          <NarrationPane store={live.store} language={tracedLanguage} />
         </div>
         <div className="fv-area is-side">
           <OutputPane store={live.store} />
           <MetricsPane store={live.store} />
         </div>
         <div className="fv-area is-timeline">
-          <TimelinePane store={live.store} language={"python"} />
+          <TimelinePane store={live.store} language={tracedLanguage} />
         </div>
       </main>
     </>
