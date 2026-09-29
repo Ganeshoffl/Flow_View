@@ -15,6 +15,18 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.4)
 
+  adapters/javascript:
+    dependencies:
+      acorn:
+        specifier: ^8.12.0
+        version: 8.18.0
+      acorn-walk:
+        specifier: ^8.3.0
+        version: 8.3.5
+      magic-string:
+        specifier: ^0.30.0
+        version: 0.30.21
+
   apps/web:
     dependencies:
       '@codemirror/commands':
@@ -848,6 +860,15 @@ packages:
 
   '@vitest/utils@2.1.9':
     resolution: {integrity: sha512-v0psaMSkNJ3A2NMrUEHFRzJtDPFn+/VWZ5WxImB21T9fjucJRmS7xCS3ppEnARb9y11OAzaD+P2Ps+b+BGX5iQ==}
+
+  acorn-walk@8.3.5:
+    resolution: {integrity: sha512-HEHNfbars9v4pgpW6SO1KSPkfoS0xVOM/9UzkJltjlsHZmJasxg8aXkuZa7SMf8vKGIBhpUsPluQSqhJFCqebw==}
+    engines: {node: '>=0.4.0'}
+
+  acorn@8.18.0:
+    resolution: {integrity: sha512-lGq+9yr1/GuAWaVYIHRjvvySG5/4VfKIvC8EWxStPdcDh/Ka7FG3twP6v4d5BkravUilhIAsG4Qj83t02LWUPQ==}
+    engines: {node: '>=0.4.0'}
+    hasBin: true
 
   ajv@8.20.0:
     resolution: {integrity: sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==}
@@ -1759,6 +1780,12 @@ snapshots:
       '@vitest/pretty-format': 2.1.9
       loupe: 3.2.1
       tinyrainbow: 1.2.0
+
+  acorn-walk@8.3.5:
+    dependencies:
+      acorn: 8.18.0
+
+  acorn@8.18.0: {}
 
   ajv@8.20.0:
     dependencies:

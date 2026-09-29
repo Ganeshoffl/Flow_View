@@ -56,6 +56,153 @@ def _adapters_root() -> Path:
 
 ADAPTERS = _adapters_root()
 
+#: Where the JavaScript adapter lives.
+#:
+#: Not resolvable through the import system the way the Python one is — it is not a Python package — so this
+#: is a path from the checkout. An installed wheel does not ship it yet, which is why
+#: :func:`javascript_adapter_root` returns None rather than a path that does not exist: the capability check
+#: reads that as "JavaScript is not available here" and says so, instead of every run failing at spawn.
+_JAVASCRIPT_ROOT = Path(__file__).resolve().parents[3] / "adapters" / "javascript"
+
+
+def javascript_adapter_root() -> Path | None:
+    """The JavaScript adapter's package directory, if it is present."""
+    return _JAVASCRIPT_ROOT if (_JAVASCRIPT_ROOT / "src" / "cli.js").is_file() else None
+
+
+def _node_read_paths(workdir: str, root: Path) -> list[Path]:
+    """Everything the JavaScript adapter must be able to read, and nothing else.
+
+    Three things: the run directory holding the program, the adapter's own source, and wherever its
+    dependencies actually live. That last one is the awkward case — pnpm puts a tree of symlinks in
+    `adapters/javascript/node_modules` whose targets are hoisted to the workspace root, and node's
+    permission model checks the resolved path. Granting only the adapter directory therefore fails at
+    `import acorn` with `ERR_ACCESS_DENIED`, naming a file under a directory nobody thought to mention.
+    """
+    paths = [Path(workdir), root]
+    # Every `node_modules` on the way up, not just the nearest. Stopping at the first one finds
+    # `adapters/javascript/node_modules`, which under pnpm is a directory of symlinks pointing at
+    # `<workspace>/node_modules/.pnpm/...` — so the grant covers the signposts and not the packages, and
+    # `import acorn` is refused.
+    for candidate in [root, *root.parents]:
+        modules = candidate / "node_modules"
+        if modules.is_dir():
+            paths.append(modules.resolve())
+    return paths
+
+
+@dataclass(frozen=True)
+class Adapter:
+    """How to start one language's tracer.
+
+    The server used to know only how to start Python: `sys.executable`, `-I`, a path ending in `cli.py`, a
+    file called `main.py`. Adding a second language meant either branching at every one of those points or
+    naming them once, here. Everything downstream of the spawn — reading JSON Lines, labelling where an
+    answer came from, forwarding stdin, reaping the process — was already language-agnostic and is untouched.
+    """
+
+    language: str
+    #: What the program is written to on disk. The extension is what makes an error message read right.
+    source_name: str
+    #: Executable plus any flags that must precede the script.
+    launcher: list[str]
+    #: The adapter's entry point.
+    script: Path
+    #: Flags this adapter's CLI understands, so the server never passes one that would be ignored in silence.
+    accepts: frozenset[str]
+    #: Extra environment for the child, on top of the scrubbed base.
+    env: dict[str, str] = field(default_factory=dict)
+    #: Whether a `RLIMIT_AS` ceiling can be applied. See the JavaScript note below.
+    address_space_rlimit: bool = True
+
+
+def _python_adapter(workdir: str, limits: "RunLimits") -> Adapter:
+    return Adapter(
+        language="python",
+        source_name="main.py",
+        launcher=[
+            sys.executable,
+            # Isolated mode: no user site-packages, no cwd on sys.path, environment ignored. It also
+            # ignores PYTHONPATH, which is why the CLI is invoked by path rather than with -m — the
+            # script puts its own parent directory on sys.path, so it imports under isolation.
+            "-I",
+        ],
+        script=ADAPTERS / "flow_view_tracer" / "cli.py",
+        accepts=frozenset(
+            {
+                "--session-id",
+                "--max-steps",
+                "--wall-ms",
+                "--memory-mb",
+                "--output-bytes",
+                "--complete-heap",
+            }
+        ),
+        env={
+            "PYTHONHASHSEED": "0",  # deterministic iteration order, so a replay matches its recording
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONUNBUFFERED": "1",
+            "PYTHONPATH": str(ADAPTERS),
+        },
+    )
+
+
+def _javascript_adapter(workdir: str, limits: "RunLimits") -> Adapter:
+    root = javascript_adapter_root()
+    if root is None:
+        raise FileNotFoundError(
+            "The JavaScript adapter is not installed alongside this server, so JavaScript cannot be run."
+        )
+    node = shutil.which("node")
+    if node is None:
+        raise FileNotFoundError("Node.js is not on PATH, so JavaScript cannot be run.")
+
+    launcher = [
+        node,
+        # The real sandbox for a JavaScript run, and the only one node offers. It has to be applied from
+        # out here: a process cannot switch its own permission model on.
+        "--permission",
+        *[f"--allow-fs-read={path}" for path in _node_read_paths(workdir, root)],
+        # The memory ceiling, in the same units the request asked for. This is V8's heap limit rather than
+        # an address-space rlimit, because RLIMIT_AS does not work here at all: V8 reserves a large virtual
+        # region up front, so a 512 MB ceiling stops node *booting* — it dies with a trap before running a
+        # line, which looks like flow_view being broken rather than a program using too much memory.
+        f"--max-old-space-size={max(64, limits.memory_mb)}",
+    ]
+
+    return Adapter(
+        language="javascript",
+        source_name="main.js",
+        launcher=launcher,
+        script=root / "src" / "cli.js",
+        accepts=frozenset(
+            {
+                "--session-id",
+                "--max-steps",
+                "--wall-ms",
+                "--memory-mb",
+                "--output-bytes",
+            }
+        ),
+        # Nothing extra. The PYTHON* variables the Python child needs are meaningless here, and passing
+        # them would be a small lie about what this process is.
+        env={},
+        address_space_rlimit=False,
+    )
+
+
+_ADAPTERS: dict[str, Callable[[str, "RunLimits"], Adapter]] = {
+    "python": _python_adapter,
+    "javascript": _javascript_adapter,
+}
+
+
+def adapter_for(language: str, workdir: str, limits: "RunLimits") -> Adapter:
+    build = _ADAPTERS.get(language)
+    if build is None:
+        raise FileNotFoundError(f"There is no adapter for {language}.")
+    return build(workdir, limits)
+
 #: How long a program may sit on an unanswered question before the run is given up on, in seconds.
 #:
 #: Generous, because the alternative is ending a run while its user is still reading. Finite, because
@@ -106,11 +253,14 @@ def platform_guards() -> dict[str, bool]:
     }
 
 
-def _preexec(limits: RunLimits) -> Callable[[], None] | None:
+def _preexec(limits: RunLimits, *, address_space: bool = True) -> Callable[[], None] | None:
     """Build the child-side setup that applies rlimits and detaches the process group.
 
     Returns ``None`` where the platform cannot support it, so the caller can report the ceilings as
     inactive rather than silently skipping them.
+
+    ``address_space`` is off for runtimes that reserve virtual memory far beyond what they use. Applying
+    ``RLIMIT_AS`` to those does not cap anything; it stops them starting.
     """
     if resource is None or not hasattr(os, "setsid"):
         return None
@@ -129,6 +279,9 @@ def _preexec(limits: RunLimits) -> Callable[[], None] | None:
         except (ValueError, OSError):
             pass
 
+        if not address_space:
+            return
+
         # Address space is set last and tolerates failure. Too low a value makes the interpreter fail
         # to start at all, which would look like a flow_view bug rather than a memory limit; a
         # missing ceiling that is reported is better than a run that cannot begin.
@@ -146,14 +299,11 @@ def _preexec(limits: RunLimits) -> Callable[[], None] | None:
 _ENV_ALLOWLIST = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "HOME", "SYSTEMROOT", "TEMP", "TMP")
 
 
-def _child_env(workdir: str) -> dict[str, str]:
+def _child_env(workdir: str, adapter: Adapter) -> dict[str, str]:
     env = {name: os.environ[name] for name in _ENV_ALLOWLIST if name in os.environ}
     env["HOME"] = workdir
     env["TMPDIR"] = workdir
-    env["PYTHONHASHSEED"] = "0"  # deterministic iteration order, so a replay matches its recording
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["PYTHONUNBUFFERED"] = "1"
-    env["PYTHONPATH"] = str(ADAPTERS)
+    env.update(adapter.env)
     return env
 
 
@@ -179,37 +329,40 @@ class Runner:
 
     async def start(self) -> None:
         self._workdir = tempfile.mkdtemp(prefix="flow_view_run_")
-        source_path = Path(self._workdir) / "main.py"
+        limits = self.request.limits
+        adapter = adapter_for(self.request.language, self._workdir, limits)
+
+        source_path = Path(self._workdir) / adapter.source_name
         source_path.write_text(self.request.source, encoding="utf-8")
 
-        limits = self.request.limits
-        command = [
-            sys.executable,
-            # Isolated mode: no user site-packages, no cwd on sys.path, environment ignored. It also
-            # ignores PYTHONPATH, which is why the CLI is invoked by path rather than with -m — the
-            # script puts its own parent directory on sys.path, so it imports under isolation.
-            "-I",
-            str(ADAPTERS / "flow_view_tracer" / "cli.py"),
-            "--source",
-            str(source_path),
-            "--session-id",
-            self.request.session_id,
-            "--max-steps",
-            str(limits.max_steps),
-            "--wall-ms",
-            str(limits.wall_ms),
-            "--memory-mb",
-            str(limits.memory_mb),
-            "--output-bytes",
-            str(limits.output_bytes),
+        command = [*adapter.launcher, str(adapter.script), "--source", str(source_path)]
+        # Only the flags this adapter understands. Sending one it does not leaves the ceiling unenforced
+        # while the request says it was asked for, and nothing anywhere reports the difference.
+        optional: list[tuple[str, str | None]] = [
+            ("--session-id", self.request.session_id),
+            ("--max-steps", str(limits.max_steps)),
+            ("--wall-ms", str(limits.wall_ms)),
+            ("--memory-mb", str(limits.memory_mb)),
+            ("--output-bytes", str(limits.output_bytes)),
+            ("--complete-heap", None if self.request.complete_heap else "skip"),
         ]
-        if self.request.complete_heap:
-            command.append("--complete-heap")
+        for flag, value in optional:
+            if flag not in adapter.accepts:
+                continue
+            if value is None:
+                command.append(flag)
+            elif value != "skip":
+                command.extend([flag, value])
 
-        preexec = _preexec(limits)
+        preexec = _preexec(limits, address_space=adapter.address_space_rlimit)
         if preexec is None:
             for name in ("cpu_time", "address_space", "file_size", "process_group_reaping"):
                 self._guards[name] = False
+        elif not adapter.address_space_rlimit:
+            # Reported as absent because it is absent. The run has a memory ceiling — V8's heap limit, set
+            # on the command line — but it is not this one, and saying otherwise would describe a
+            # protection that is not the one in force.
+            self._guards["address_space"] = False
 
         self._process = await asyncio.create_subprocess_exec(
             *command,
@@ -217,7 +370,7 @@ class Runner:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=self._workdir,
-            env=_child_env(self._workdir),
+            env=_child_env(self._workdir, adapter),
             preexec_fn=preexec,
             # A long JSON line must not be truncated into invalid JSON.
             limit=8 * 1024 * 1024,

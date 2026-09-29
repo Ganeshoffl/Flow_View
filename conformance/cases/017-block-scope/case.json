@@ -1,0 +1,16 @@
+{
+  "name": "block-scope",
+  "description": "A variable declared inside a branch, and the enclosing variable still usable after it. Trivial to run and easy to instrument wrongly: a tracer that observes variables by naming them has to know which names are still in scope at each point, or the code it inserts refers to a variable that no longer exists and kills the program it was supposed to be watching.",
+  "concepts": [
+    "scope",
+    "blocks"
+  ],
+  "expect": {
+    "status": "ok",
+    "stdout": "5\n",
+    "final_variables": {
+      "x": 5
+    },
+    "no_exception_reported": true
+  }
+}

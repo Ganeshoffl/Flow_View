@@ -52,11 +52,25 @@ def collect(socket: Any, *, timeout_messages: int = 4000) -> dict[str, Any]:
     return {"header": header, "events": events, "errors": errors}
 
 
-def run_program(client: Any, source: str, **extra: Any) -> dict[str, Any]:
+def run_program(client: Any, source: str, language: str = "python", **extra: Any) -> dict[str, Any]:
     session = client.post("/api/session").json()
     with client.websocket_connect(f"/api/session/{session['id']}/ws") as socket:
-        socket.send_json({"type": "run", "language": "python", "source": source, **extra})
+        socket.send_json({"type": "run", "language": language, "source": source, **extra})
         return collect(socket)
+
+
+def node_is_absent() -> bool:
+    """Whether this machine can run the JavaScript adapter at all.
+
+    Used to skip rather than fail, because a machine without Node is a machine where JavaScript being
+    unavailable is the correct behaviour — and there is a test for that case too.
+    """
+    import shutil
+
+    return shutil.which("node") is None
+
+
+needs_node = pytest.mark.skipif(node_is_absent(), reason="Node is not installed on this machine")
 
 
 class TestCapabilities:
@@ -69,11 +83,61 @@ class TestCapabilities:
     def test_unbuilt_languages_say_so_and_name_the_phase(self, client: Any) -> None:
         # A language that is merely not built yet must not look like a broken installation.
         payload = client.get("/api/capabilities").json()
-        for language in ("javascript", "c", "cpp", "java"):
+        for language in ("c", "cpp", "java"):
             item = next(i for i in payload["languages"] if i["language"] == language)
             assert item["available"] is False
             assert item["reason"]
             assert item["planned"]
+
+    @needs_node
+    def test_javascript_is_available(self, client: Any) -> None:
+        payload = client.get("/api/capabilities").json()
+        js = next(item for item in payload["languages"] if item["language"] == "javascript")
+        assert js["available"] is True
+        assert js["version"], "an available language must report the version that will run the code"
+        # Nothing left to promise or to apologise for.
+        assert not js["reason"]
+        assert not js["planned"]
+
+    def test_javascript_without_node_blames_node_rather_than_the_adapter(
+        self, client: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The two reasons JavaScript might not work are different, and so are their remedies.
+
+        The first version reported "the adapter is not built yet" even on a machine with no Node at all,
+        which is advice that cannot be acted on: there is nothing to wait for, something to install.
+        """
+        import shutil as shutil_module
+
+        # Fetched from sys.modules rather than imported by name. `flow_view_server/__init__.py` does
+        # `from .capabilities import capabilities`, which rebinds the attribute `flow_view_server
+        # .capabilities` from the submodule to the function — so every spelling of the import, including
+        # `import flow_view_server.capabilities as x`, hands back the function instead of the module.
+        import importlib
+
+        capabilities_module = importlib.import_module("flow_view_server.capabilities")
+
+        real_which = shutil_module.which
+        monkeypatch.setattr(
+            capabilities_module.shutil,
+            "which",
+            lambda name, *args, **kwargs: None if name == "node" else real_which(name, *args, **kwargs),
+        )
+        capabilities_module.language_support.cache_clear()
+        try:
+            entry = next(
+                item
+                for item in capabilities_module.language_support()
+                if item.language == "javascript"
+            )
+            assert entry.available is False
+            assert "Node" in (entry.reason or "")
+            assert entry.remedy, "a missing tool must come with the way to get it"
+            assert "Install Node" in entry.remedy
+        finally:
+            # The probe is cached for the life of the process, so a lie left here would follow every
+            # later test.
+            capabilities_module.language_support.cache_clear()
 
     def test_a_missing_toolchain_offers_a_remedy(self, client: Any) -> None:
         import shutil
@@ -191,7 +255,156 @@ class TestRunning:
     def test_an_unbuilt_language_is_refused_clearly(self, client: Any) -> None:
         result = run_program(client, "int main(){}", language="c")
         assert result["errors"]
+        message = result["errors"][0]["message"]
+        assert "not available yet" in message
+        # And it says what *is* available, so the answer to "then what can I use" is in the same sentence.
+        assert "python" in message
+
+    def test_a_language_nobody_has_heard_of_is_refused_rather_than_attempted(
+        self, client: Any
+    ) -> None:
+        result = run_program(client, "puts 1", language="ruby")
+        assert result["errors"]
         assert "not available yet" in result["errors"][0]["message"]
+
+
+@needs_node
+class TestRunningJavaScript:
+    """The same seams as `TestRunning`, through the other adapter.
+
+    These are not duplicates for the sake of symmetry. Everything from the spawn onwards is shared code
+    reading a subprocess's stdout, and the *only* way to find out whether it is genuinely language-agnostic
+    or merely Python-shaped is to put a second language through it. The first attempt at this failed at
+    startup, because Node cannot boot under the address-space rlimit the server applied to every child.
+    """
+
+    def test_a_trace_survives_the_round_trip_intact(self, client: Any) -> None:
+        result = run_program(
+            client, "let x = 1;\nlet y = x + 2;\nconsole.log(y);\n", language="javascript"
+        )
+        assert not result["errors"], result["errors"]
+        document = {
+            "schema": result["header"]["schema"],
+            "session": result["header"]["session"],
+            "events": result["events"],
+        }
+        shape = validate_trace(document)
+        assert shape.valid, shape.describe()
+        coherence = check_trace_invariants(document)
+        assert coherence.valid, coherence.describe()
+
+    def test_the_header_says_which_language_ran(self, client: Any) -> None:
+        session = client.post("/api/session").json()
+        with client.websocket_connect(f"/api/session/{session['id']}/ws") as socket:
+            socket.send_json({"type": "run", "language": "javascript", "source": "let x = 1;\n"})
+            first = socket.receive_json()
+        assert first["type"] == "session"
+        assert first["session"]["language"] == "javascript"
+        assert first["session"]["language_version"].startswith("v"), "Node reports versions as vX.Y.Z"
+
+    def test_program_output_is_relayed(self, client: Any) -> None:
+        result = run_program(
+            client, "for (let i = 0; i < 3; i++) {\n  console.log(i);\n}\n", language="javascript"
+        )
+        printed = "".join(e["text"] for e in result["events"] if e["t"] == "stdout")
+        assert printed == "0\n1\n2\n"
+
+    def test_the_header_reports_the_guards_that_are_really_in_force(self, client: Any) -> None:
+        result = run_program(client, "let x = 1;\n", language="javascript")
+        guards = result["header"]["session"].get("guards_active")
+        assert guards, "a run must state what was protecting it"
+        joined = " ".join(guards).lower()
+        # The permission model has to be on, or the run is unguarded and the UI would have to say so.
+        assert "permission model" in joined
+        assert "no sandbox" not in joined
+        # And it must not claim the one thing node cannot do.
+        assert "network not restricted" in joined
+
+    def test_a_variable_declared_in_a_block_does_not_break_the_program(self, client: Any) -> None:
+        """The instrumenter observes variables by naming them, so it has to know what is still in scope.
+
+        Worth a server test and not only a unit test: this is the shape of almost every real JavaScript
+        program, and when it was wrong the failure was a ReferenceError *in the user's program* rather than
+        anything that looked like a flow_view bug.
+        """
+        result = run_program(
+            client,
+            "let x = 1;\nif (x > 0) {\n  let y = 2;\n  x = x + y;\n}\nconsole.log(x);\n",
+            language="javascript",
+        )
+        printed = "".join(e["text"] for e in result["events"] if e["t"] == "stdout")
+        assert printed == "3\n"
+        assert not [e for e in result["events"] if e["t"] == "exception_uncaught"]
+
+    def test_an_infinite_loop_is_stopped_and_still_yields_a_usable_trace(self, client: Any) -> None:
+        result = run_program(
+            client,
+            "let n = 0;\nwhile (true) {\n  n += 1;\n}\n",
+            language="javascript",
+            limits={"max_steps": 400},
+        )
+        end = [e for e in result["events"] if e["t"] == "run_end"]
+        assert end and end[0]["status"] == "step_limit"
+        document = {
+            "schema": result["header"]["schema"],
+            "session": result["header"]["session"],
+            "events": result["events"],
+        }
+        # Balanced frames matter most here: a truncated run still has to close what it opened.
+        assert check_trace_invariants(document).valid
+
+    def test_a_failing_program_is_a_result_not_an_error(self, client: Any) -> None:
+        result = run_program(
+            client, "const v = [1];\nconsole.log(v[9].length);\n", language="javascript"
+        )
+        assert not result["errors"], "a program that throws is not a server error"
+        end = [e for e in result["events"] if e["t"] == "run_end"]
+        assert end[0]["status"] == "error"
+        uncaught = [e for e in result["events"] if e["t"] == "exception_uncaught"]
+        assert uncaught and uncaught[0]["type"] == "TypeError"
+        assert uncaught[0]["stack"], "an uncaught exception must report where it happened"
+
+    def test_a_syntax_error_is_reported_on_the_offending_program(self, client: Any) -> None:
+        result = run_program(client, "function broken(\n", language="javascript")
+        notes = [e["text"] for e in result["events"] if e["t"] == "note"]
+        assert any("parse" in note.lower() for note in notes)
+
+    def test_prefilled_stdin_produces_a_run_with_no_human_involved(self, client: Any) -> None:
+        result = run_program(
+            client,
+            "const name = prompt('Name: ');\n"
+            "const age = Number(prompt('Age: '));\n"
+            "console.log(name, age);\n",
+            language="javascript",
+            stdin="Ada\n36\n",
+        )
+        printed = "".join(e["text"] for e in result["events"] if e["t"] == "stdout")
+        assert "Ada 36" in printed
+        responses = [e for e in result["events"] if e["t"] == "stdin_response"]
+        assert len(responses) == 2, "the answers must be recorded so a replay needs no human"
+        # Labelled by the end that supplied them, not guessed at from how fast the read returned.
+        assert [r["source"] for r in responses] == ["prefilled", "prefilled"]
+
+    def test_a_long_loop_arrives_folded_and_still_reports_the_right_answer(
+        self, client: Any
+    ) -> None:
+        """Collapsing, through the server, with the JavaScript collapser rather than the Python one."""
+        result = run_program(
+            client,
+            "let total = 0;\nfor (let i = 0; i < 20000; i++) {\n  total += i;\n}\nconsole.log(total);\n",
+            language="javascript",
+        )
+        assert not result["errors"], result["errors"]
+        folds = [e for e in result["events"] if e["t"] == "collapse"]
+        assert folds, "a twenty-thousand iteration loop must not arrive one step at a time"
+
+        folded = sum(f["iterations"] for f in folds)
+        verbatim = len([e for e in result["events"] if e["t"] == "loop_iter"])
+        assert folded + verbatim == 20000, "every iteration must be accounted for exactly once"
+
+        # The whole point of folding: the summary is shorter, and the answer is still exact.
+        printed = "".join(e["text"] for e in result["events"] if e["t"] == "stdout")
+        assert printed.strip() == str(sum(range(20000)))
 
     def test_events_arrive_batched_rather_than_one_per_frame(self, client: Any) -> None:
         # One socket frame per event would spend more time framing than working.

@@ -10,6 +10,8 @@ import { useCallback, useState } from "react";
 
 import { PlaybackBar } from "@flow-view/renderers";
 
+import type { Language } from "@flow-view/trace-schema";
+
 import type { LiveRun } from "./useLiveRun.js";
 
 export interface RunControlsProps {
@@ -21,7 +23,18 @@ export interface RunControlsProps {
   readonly editing: boolean;
   readonly canToggleEditing: boolean;
   readonly onToggleEditing: () => void;
+  readonly language: Language;
+  readonly onLanguageChange: (language: Language) => void;
 }
+
+/** What each language is called in the picker, rather than how the schema spells it. */
+const LANGUAGE_NAMES: Record<string, string> = {
+  python: "Python",
+  javascript: "JavaScript",
+  c: "C",
+  cpp: "C++",
+  java: "Java",
+};
 
 export function RunControls({
   live,
@@ -31,6 +44,8 @@ export function RunControls({
   editing,
   canToggleEditing,
   onToggleEditing,
+  language,
+  onLanguageChange,
 }: RunControlsProps) {
   const [answer, setAnswer] = useState("");
   const [showStdin, setShowStdin] = useState(false);
@@ -43,7 +58,12 @@ export function RunControls({
     setAnswer("");
   }, [answer, live]);
 
-  const python = live.capabilities?.languages.find((l) => l.language === "python");
+  // Every language the server knows about, in the order it reported them. The ones that cannot run are
+  // listed too, disabled and labelled — a language that is simply missing from the menu invites the
+  // question "does flow_view do Java?", which the server already knows the answer to.
+  const languages = live.capabilities?.languages ?? [];
+  const runnable = languages.filter((entry) => entry.available);
+  const selected = languages.find((entry) => entry.language === language);
 
   return (
     <div className="fv-runbar">
@@ -51,6 +71,29 @@ export function RunControls({
         <button type="button" className="is-primary fv-run" onClick={onRun} disabled={busy}>
           {busy ? "Running…" : started ? "Run again" : "Run"}
         </button>
+
+        {runnable.length > 1 ? (
+          <label className="fv-language">
+            <span className="fv-visually-hidden">Language</span>
+            <select
+              value={language}
+              disabled={busy}
+              onChange={(event) => onLanguageChange(event.target.value as Language)}
+            >
+              {languages.map((entry) => (
+                <option
+                  key={entry.language}
+                  value={entry.language}
+                  disabled={!entry.available}
+                  title={entry.available ? undefined : [entry.reason, entry.remedy].filter(Boolean).join(" ")}
+                >
+                  {LANGUAGE_NAMES[entry.language] ?? entry.language}
+                  {entry.available ? "" : " — not available"}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         {busy ? (
           <button type="button" onClick={live.stop}>
             Stop
@@ -88,8 +131,10 @@ export function RunControls({
 
         <div className="fv-header-spacer" />
 
-        {python?.version ? (
-          <span className="fv-muted fv-runtime">python {python.version}</span>
+        {selected?.version ? (
+          <span className="fv-muted fv-runtime">
+            {LANGUAGE_NAMES[selected.language] ?? selected.language} {selected.version}
+          </span>
         ) : null}
       </div>
 

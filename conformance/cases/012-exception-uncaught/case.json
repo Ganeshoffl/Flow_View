@@ -13,5 +13,12 @@
     },
     "min_objects": 1,
     "frames_balanced": true
+  },
+  "expect_per_language": {
+    "javascript": {
+      "exceptions": {
+        "uncaught": "TypeError"
+      }
+    }
   }
 }

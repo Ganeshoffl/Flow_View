@@ -235,16 +235,63 @@ describe("cross-language agreement", () => {
       perCase.set(language, text);
       outputs.set(caseName, perCase);
     }
+
     for (const [caseName, perLanguage] of outputs) {
-      const distinct = new Set(perLanguage.values());
+      // A case may declare that one language's *printed text* differs, and only that: `print(None)` writes
+      // "None" where `console.log(null)` writes "null". The declaration is not a way to excuse a
+      // disagreement after the fact — it is checked exactly, and every language that did not declare one
+      // still has to agree with the others.
+      const declared = declaredOutputs(caseName);
+      const undeclared = new Map<string, string>();
+
+      for (const [language, text] of perLanguage) {
+        const expected = declared.get(language);
+        if (expected === undefined) {
+          undeclared.set(language, text);
+        } else {
+          expect(
+            text,
+            `${caseName} [${language}] declares its own stdout in case.json, so it must print exactly that`,
+          ).toBe(expected);
+        }
+      }
+
+      const distinct = new Set(undeclared.values());
       expect(
         distinct.size,
         `${caseName} printed different things in different languages: ` +
-          JSON.stringify([...perLanguage]),
+          JSON.stringify([...undeclared]) +
+          ". If this is a difference in the language's own surface rather than in the adapter, declare it " +
+          "as expect_per_language.<language>.stdout in the case.",
       ).toBeLessThanOrEqual(1);
     }
   });
 });
+
+const CASE_DIR = join(here, "..", "cases");
+
+/**
+ * Per-language stdout a case has explicitly declared, keyed by language.
+ *
+ * Read from the case rather than hardcoded here, so the corpus stays the single place that decides what a
+ * case expects. The Python runner reads the same field and refuses to let it restate anything but surface.
+ */
+function declaredOutputs(caseName: string): Map<string, string> {
+  const out = new Map<string, string>();
+  let raw: string;
+  try {
+    raw = readFileSync(join(CASE_DIR, caseName, "case.json"), "utf8");
+  } catch {
+    return out;
+  }
+  const meta = JSON.parse(raw) as {
+    expect_per_language?: Record<string, { stdout?: string }>;
+  };
+  for (const [language, override] of Object.entries(meta.expect_per_language ?? {})) {
+    if (typeof override?.stdout === "string") out.set(language, override.stdout);
+  }
+  return out;
+}
 
 function splitName(name: string): [string, string] {
   const index = name.lastIndexOf(".");

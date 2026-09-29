@@ -102,6 +102,68 @@ check() {
   unmutate "$file"
 }
 
+# check_vitest <label> <file> <old> <new> <vitest path>
+#
+# The JavaScript adapter's unit tests run under vitest, not pytest. Same contract as `check`: put the bug
+# back, require the suite to notice, report it as a survivor if it does not.
+check_vitest() {
+  local label="$1" file="$2" old="$3" new="$4" suite="$5"
+  CHECKED=$((CHECKED + 1))
+  if ! mutate "$file" "$old" "$new"; then
+    printf '  \033[31mBROKEN\033[0m   %-52s the mutation no longer applies\n' "$label"
+    SURVIVORS=$((SURVIVORS + 1))
+    rm -f "$BACKUP_DIR/$(key_for "$file").bak"
+    return
+  fi
+  local out status
+  out="$(timeout "$RUN_TIMEOUT" pnpm exec vitest run "$suite" 2>&1)"
+  status=$?
+  if [ "$status" -eq 124 ]; then
+    printf '  \033[33mcaught\033[0m   %-52s by hanging - killed after %ss\n' "$label" "$RUN_TIMEOUT"
+  elif echo "$out" | grep -qE "[0-9]+ failed"; then
+    printf '  \033[32mcaught\033[0m   %-52s %s\n' "$label" \
+      "$(echo "$out" | grep -oE '[0-9]+ failed' | head -1)"
+  else
+    printf '  \033[31mSURVIVED\033[0m %-52s %s\n' "$label" \
+      "$(echo "$out" | grep -oE '[0-9]+ passed' | head -1)"
+    SURVIVORS=$((SURVIVORS + 1))
+  fi
+  unmutate "$file"
+}
+
+# check_corpus <label> <file> <old> <new>
+#
+# The conformance corpus is a script rather than a pytest suite, so it needs its own runner. This is the
+# level that catches a wrong *trace* — a mutation can leave every unit test happy and still make the
+# adapter describe the program incorrectly, and only running the corpus finds that.
+check_corpus() {
+  local label="$1" file="$2" old="$3" new="$4"
+  CHECKED=$((CHECKED + 1))
+  if ! mutate "$file" "$old" "$new"; then
+    printf '  \033[31mBROKEN\033[0m   %-52s the mutation no longer applies\n' "$label"
+    SURVIVORS=$((SURVIVORS + 1))
+    rm -f "$BACKUP_DIR/$(key_for "$file").bak"
+    return
+  fi
+  local out status
+  out="$(timeout "$RUN_TIMEOUT" "$PYTHON" conformance/runner.py 2>&1)"
+  status=$?
+  if [ "$status" -eq 124 ]; then
+    printf '  \033[33mcaught\033[0m   %-52s by hanging - killed after %ss\n' "$label" "$RUN_TIMEOUT"
+  elif [ "$status" -ne 0 ]; then
+    printf '  \033[32mcaught\033[0m   %-52s %s\n' "$label" \
+      "$(echo "$out" | grep -oE '[0-9]+/[0-9]+ passed' | head -1)"
+  else
+    printf '  \033[31mSURVIVED\033[0m %-52s %s\n' "$label" \
+      "$(echo "$out" | grep -oE '[0-9]+/[0-9]+ passed' | head -1)"
+    SURVIVORS=$((SURVIVORS + 1))
+  fi
+  unmutate "$file"
+  # The corpus writes traces as it goes, so a mutated run leaves mutated traces behind for the replay
+  # suite to read. Regenerated here rather than left for whatever runs next.
+  timeout "$RUN_TIMEOUT" "$PYTHON" conformance/runner.py >/dev/null 2>&1
+}
+
 heading() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
 TRACER=adapters/python/flow_view_tracer/tracer.py
@@ -222,6 +284,106 @@ if [ -f adapters/python/flow_view_tracer/collapse.py ]; then
 else
   echo "  skipped: loop collapsing is not on this branch"
 fi
+
+heading "the JavaScript adapter"
+
+JS_INSTRUMENT=adapters/javascript/src/instrument.js
+JS_RUNTIME=adapters/javascript/src/runtime.js
+JS_COLLAPSE=adapters/javascript/src/collapse.js
+JS_CLI=adapters/javascript/src/cli.js
+
+# The worst bug found while building this adapter: naming an out-of-scope variable in inserted code does not
+# make the trace slightly wrong, it throws a ReferenceError and kills the program being watched.
+check_corpus "a block treated as part of its enclosing scope" "$JS_INSTRUMENT" \
+  'const inner = childScope(scope);' \
+  'const inner = scope;'
+
+check_vitest "a block treated as part of its enclosing scope (unit)" "$JS_INSTRUMENT" \
+  'const inner = childScope(scope);' \
+  'const inner = scope;' \
+  adapters/javascript/test/instrument.test.js
+
+# A for loop whose counter appears nowhere is a strange thing for a tool that exists to show loops running.
+check_vitest "a loop's own variable left out of its body" "$JS_INSTRUMENT" \
+  'if (header && header.type === "VariableDeclaration") declare(bodyScope, header);' \
+  'if (false) declare(bodyScope, header);' \
+  adapters/javascript/test/instrument.test.js
+
+# Frames numbered per function rather than per call made every level of a recursion share one id, and the
+# innermost return overwrote the rest: fact(4) reported returning 1.
+check_corpus "one frame id shared by every recursive call" "$JS_RUNTIME" \
+  'const frame = this.nextFrame++;' \
+  'const frame = 1;'
+
+check_vitest "one frame id shared by every recursive call (unit)" "$JS_RUNTIME" \
+  'const frame = this.nextFrame++;' \
+  'const frame = 1;' \
+  adapters/javascript/test/runtime.test.js
+
+# Aliasing is only visible as "the object one name points at grew". If growth looks like construction there
+# is nothing left to see.
+check_corpus "an object growing reported as an object being built" "$JS_RUNTIME" \
+  'op: had ? "set" : seen ? "append" : "set",' \
+  'op: "set",'
+
+# Following only changed slots hid `head.next.next = ...`, because head.next still pointed at the same object.
+check_corpus "the heap walk stopping at an unchanged reference" "$JS_RUNTIME" \
+  'if (!isAtomic(slot)) children.push(slot);' \
+  'if (!isAtomic(slot) && !(before.has(key) && sameValue(before.get(key), slot))) children.push(slot);'
+
+check_vitest "the heap walk stopping at an unchanged reference (unit)" "$JS_RUNTIME" \
+  'if (!isAtomic(slot)) children.push(slot);' \
+  'if (!isAtomic(slot) && !(before.has(key) && sameValue(before.get(key), slot))) children.push(slot);' \
+  adapters/javascript/test/runtime.test.js
+
+check_corpus "a loop ended by break reported as ended by its condition" "$JS_RUNTIME" \
+  'if (kind === "break") this.pendingJump = "break";' \
+  'if (false) this.pendingJump = "break";'
+
+check_vitest "one exception reported once per frame it crosses" "$JS_RUNTIME" \
+  'if (this.unwinding !== NOTHING && Object.is(this.unwinding, error)) return;' \
+  'if (false) return;' \
+  adapters/javascript/test/runtime.test.js
+
+# A truncated run still has to close what it opened, and emission is switched off when a budget bites.
+# $'...' so the newline is a real one: _mutate.py replaces text literally and does not read escapes.
+check_corpus "a truncated run leaving its frames open" "$JS_RUNTIME" \
+  $'  seal() {\n    this.stopped = false;' \
+  $'  seal() {\n    if (false) this.stopped = false;'
+
+check_vitest "a fold swallowing output and exceptions" "$JS_COLLAPSE" \
+  'if (!FOLDABLE.has(kind)) {' \
+  'if (false) {' \
+  adapters/javascript/test/collapse.test.js
+
+check_vitest "work discarded along with the steps that did it" "$JS_COLLAPSE" \
+  'this.metrics.set(name, (this.metrics.get(name) ?? 0) + Number(delta));' \
+  'void name; void delta;' \
+  adapters/javascript/test/collapse.test.js
+
+check_vitest "folding before numbering, so seq and step stay dense" "$JS_RUNTIME" \
+  'if (STEPPABLE.has(kind)) {' \
+  'if (true) {' \
+  adapters/javascript/test/runtime.test.js
+
+# Claiming a guard that is not in force is worse than having none: it is the reason someone stops being
+# careful. Node has no network permission scope, so this sentence was never true.
+check "a guard claimed that node does not enforce" "$JS_CLI" \
+  '  guards.push("network NOT restricted: node has no permission scope for it");' \
+  '  guards.push("network refused");' \
+  apps/server/tests
+
+# Node dies with a trap before running a line if RLIMIT_AS is applied to it.
+check "node given an address-space ceiling it cannot boot under" "$RUNNER" \
+  '        address_space_rlimit=False,' \
+  '        address_space_rlimit=True,' \
+  apps/server/tests
+
+# pnpm hoists dependencies, so the nearest node_modules is a tree of symlinks and the packages live higher up.
+check "only the nearest node_modules granted to node" "$RUNNER" \
+  $'            paths.append(modules.resolve())\n    return paths' \
+  $'            paths.append(modules.resolve())\n            break\n    return paths' \
+  apps/server/tests
 
 heading "gates that cannot lie"
 

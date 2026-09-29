@@ -23,5 +23,10 @@
         "returns": 42
       }
     ]
+  },
+  "expect_per_language": {
+    "javascript": {
+      "stdout": "null 42\n"
+    }
   }
 }

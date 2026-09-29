@@ -23,6 +23,9 @@ export default defineConfig({
     include: [
       "packages/**/test/**/*.test.ts",
       "apps/**/test/**/*.test.ts",
+      // The JavaScript adapter is plain ESM with no build step, so its tests are plain `.js` too. Running
+      // them here rather than under a second runner keeps `pnpm test` the one command that checks everything.
+      "adapters/javascript/test/**/*.test.js",
       // Replays real adapter output. Needs `python conformance/runner.py` to have run first, and
       // fails loudly rather than skipping if it has not.
       "conformance/test/**/*.test.ts",
