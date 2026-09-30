@@ -292,11 +292,22 @@ def check_trace_invariants(trace: Mapping[str, Any]) -> ValidationResult:
             if not open_frames:
                 result.add(path, "frame_pop with no open frame")
             else:
-                innermost = open_frames.pop()
-                if isinstance(frame, int) and innermost != frame:
+                # Closed by name, not by position.
+                #
+                # Frames used to have to close innermost-first, which is true of a program doing one thing at a
+                # time and false of any program that does not. Two `async` calls waiting on something both have
+                # open frames, and whichever finishes first closes first — so the one opened *second* can
+                # legitimately close *second-to-last*. Demanding a strict stack rejected correct traces of
+                # concurrent programs.
+                #
+                # What still has to hold, and is what this checks: a frame may only be closed if it was opened,
+                # and may only be closed once.
+                if isinstance(frame, int) and frame in open_frames:
+                    open_frames.remove(frame)
+                elif isinstance(frame, int):
                     result.add(
                         path,
-                        f"frame_pop closed frame {frame} but {innermost} was innermost",
+                        f"frame_pop closed frame {frame}, which was not open",
                     )
         elif kind == "obj_new":
             obj = event.get("obj")

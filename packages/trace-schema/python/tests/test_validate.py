@@ -190,13 +190,33 @@ class TestInvariants:
                 {"seq": 0, "t": "run_start"},
                 {"seq": 1, "t": "frame_push", "frame": 0, "func": "a", "args": [], "kind": "user", "recursion_depth": 0},
                 {"seq": 2, "t": "frame_push", "frame": 1, "func": "b", "args": [], "kind": "user", "recursion_depth": 0},
+                {"seq": 3, "t": "frame_pop", "frame": 7, "reason": "return"},
+                {"seq": 4, "t": "frame_pop", "frame": 1, "reason": "return"},
+                {"seq": 5, "t": "frame_pop", "frame": 0, "reason": "return"},
+                {"seq": 6, "t": "run_end", "status": "ok", "steps": 4, "duration_ms": 0.0},
+            )
+        )
+        assert not result.valid
+        assert "was not open" in result.errors[0].message
+
+    def test_allows_frames_closing_out_of_order(self) -> None:
+        """Two calls in flight at once close in whatever order they finish.
+
+        This was rejected until concurrency was traced properly: the rule was that a frame had to be the innermost
+        one to close, which describes a program doing one thing at a time and nothing else. Two `async` calls both
+        have open frames, and the one opened second may well finish first.
+        """
+        result = check_trace_invariants(
+            trace(
+                {"seq": 0, "t": "run_start"},
+                {"seq": 1, "t": "frame_push", "frame": 0, "func": "a", "args": [], "kind": "user", "recursion_depth": 0},
+                {"seq": 2, "t": "frame_push", "frame": 1, "func": "b", "args": [], "kind": "user", "recursion_depth": 0},
                 {"seq": 3, "t": "frame_pop", "frame": 0, "reason": "return"},
                 {"seq": 4, "t": "frame_pop", "frame": 1, "reason": "return"},
                 {"seq": 5, "t": "run_end", "status": "ok", "steps": 4, "duration_ms": 0.0},
             )
         )
-        assert not result.valid
-        assert "was innermost" in result.errors[0].message
+        assert result.valid, result.describe()
 
     def test_rejects_mutating_an_object_never_allocated(self) -> None:
         result = check_trace_invariants(

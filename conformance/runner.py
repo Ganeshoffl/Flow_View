@@ -22,6 +22,7 @@ porting it to Python to test it here would create a second one to disagree with.
 
 from __future__ import annotations
 
+import functools
 import json
 import sys
 from dataclasses import dataclass, field
@@ -253,6 +254,27 @@ def verify(case: Case, trace: Trace) -> Result:
             actual == expect["status"], f"status: expected {expect['status']}, got {actual}"
         )
 
+    if expect.get("stopped_by_budget"):
+        # A ceiling stopped the run, and the trace says which one — but not *which* ceiling, because that
+        # depends on how fast the adapter is rather than on whether it behaved correctly.
+        #
+        # Naming `step_limit` here used to work because every adapter reached it. Java does not: it traces at
+        # roughly a fortieth of Python's rate, and once long loops are folded the step count stops rising while
+        # the JVM still has to be stepped through every iteration. So the clock arrives first. Insisting on
+        # `step_limit` would have been insisting that Java be as fast as Python, dressed up as a correctness
+        # check. What the case actually means is that an endless loop ends, deliberately, and says so.
+        ends = trace.of("run_end")
+        actual = ends[-1]["status"] if ends else "<no run_end>"
+        result.check(
+            actual in ("step_limit", "timeout"),
+            f"a budget should have stopped this run, but it ended as {actual}",
+        )
+        warnings = [e for e in trace.of("note") if e.get("level") == "warn"]
+        result.check(
+            bool(warnings),
+            "a run cut short must say so; nothing here warned that the trace is incomplete",
+        )
+
     if "stdout" in expect:
         actual_out = trace.stdout()
         result.check(
@@ -290,6 +312,7 @@ def verify(case: Case, trace: Trace) -> Result:
     _check_calls(expect, trace, result)
     _check_recursion(expect, trace, result)
     _check_exceptions(expect, trace, result)
+    _check_siblings(expect, trace, result)
     _check_heap(expect, trace, result)
     _check_stdin(expect, trace, result)
     _check_library(expect, trace, result)
@@ -503,6 +526,52 @@ def _check_exceptions(expect: dict[str, Any], trace: Trace, result: Result) -> N
         )
 
 
+def _check_siblings(expect: dict[str, Any], trace: Trace, result: Result) -> None:
+    """Calls that happen at the same time must be reported as happening beside each other.
+
+    This is what a tracer with one stack of open frames gets wrong. Two calls to the same function, both waiting
+    on something, are both *open* at once — so the second looks nested inside the first, and because they share a
+    name it looks like recursion. The call-stack pane then shows a depth that never existed.
+
+    Checked as three separate claims, because they fail separately: the right number of calls, all with the same
+    caller, none of them claiming to be a recursive call.
+    """
+    for wanted in expect.get("sibling_calls") or []:
+        name = wanted["func"]
+        pushes = [e for e in trace.of("frame_push") if e.get("func") == name]
+        if "count" in wanted:
+            result.check(
+                len(pushes) == wanted["count"],
+                f"calls to {name}: expected {wanted['count']}, got {len(pushes)}",
+            )
+        callers = {e.get("caller") for e in pushes}
+        result.check(
+            len(callers) <= 1,
+            f"concurrent calls to {name} should share one caller, but were reported under {callers} "
+            "- one was placed inside another because both were open at the same time",
+        )
+        depths = {e.get("recursion_depth") for e in pushes}
+        result.check(
+            depths <= {0},
+            f"concurrent calls to {name} are siblings, not recursion, but depths {sorted(depths)} were reported",
+        )
+
+        if "returns" in wanted:
+            # Compared as a set, because concurrent calls finish in whatever order they finish. Which one comes
+            # back first is not something the trace should be pinned to; that both answers arrive, and land on the
+            # right call, is.
+            ids = {e["frame"] for e in pushes}
+            returned = sorted(
+                _decode(e["return_value"], trace)
+                for e in trace.of("frame_pop")
+                if e.get("frame") in ids and "return_value" in e
+            )
+            result.check(
+                returned == sorted(wanted["returns"]),
+                f"returns from {name}: expected {sorted(wanted['returns'])}, got {returned}",
+            )
+
+
 def _check_heap(expect: dict[str, Any], trace: Trace, result: Result) -> None:
     if "min_objects" in expect:
         count = len(trace.of("obj_new"))
@@ -687,38 +756,87 @@ def run_python(case: Case) -> Trace:
 
 #: Adapters that exist. A language is added here once its adapter is built, and the same corpus then
 #: governs it with no new expectations to write.
-def run_javascript(case: Case) -> Trace:
-    """Trace a program with the JavaScript adapter, by running its CLI.
+@dataclass(frozen=True)
+class Spawned:
+    """An adapter that runs as a command, and the few things that differ between them.
 
-    A subprocess rather than an in-process call, because that is how the server runs it too. Testing it
-    any other way would leave the path the product actually takes unexercised.
+    The JavaScript and Java adapters were each written with their own copy of this: resolve an executable, write
+    the program to a temporary directory, run it, split JSON Lines into a header and events, read the status off
+    `run_end`. Sixty lines, twice, differing in five values — so a fix to one of them was a fix to one of them.
+    The Python adapter is not here because it genuinely differs: it runs in-process.
+    """
+
+    language: str
+    #: The program on PATH that runs the adapter.
+    executable: str
+    #: The adapter's entry point, relative to the repository root.
+    entry: tuple[str, ...]
+    #: What the traced program is called on disk. The extension has to match what the language expects.
+    source_name: str
+    #: How long the whole run may take, including starting a runtime.
+    timeout_s: int
+    #: The wall-clock budget to give the adapter when the case does not name one.
+    default_wall_ms: int = 30_000
+
+
+#: Every adapter that runs as a subprocess.
+#:
+#: Java gets four times the wall budget, because it traces at roughly a fortieth of Python's rate: a case that
+#: means to test a *step* ceiling has to be able to reach it. Left at the shared default, the budget case ran out
+#: of clock first and reported a timeout where the case asked about steps.
+SPAWNED = (
+    Spawned(
+        language="javascript",
+        executable="node",
+        entry=("adapters", "javascript", "src", "cli.js"),
+        source_name="main.js",
+        timeout_s=120,
+    ),
+    Spawned(
+        language="java",
+        executable="java",
+        entry=("adapters", "java", "src", "FlowViewTracer.java"),
+        source_name="Main.java",
+        timeout_s=300,
+        default_wall_ms=120_000,
+    ),
+)
+
+
+def run_spawned(spec: Spawned, case: Case) -> Trace:
+    """Trace a program by running its adapter as a command.
+
+    A subprocess rather than an in-process call, because that is how the server runs it too. Testing it any other
+    way would leave the path the product actually takes unexercised.
     """
     import shutil
     import subprocess
     import tempfile
 
-    source = case.source_for("javascript")
+    source = case.source_for(spec.language)
     assert source is not None
 
-    node = shutil.which("node")
-    if node is None:
-        raise RuntimeError("node is not on PATH, so the JavaScript adapter cannot run")
+    executable = shutil.which(spec.executable)
+    if executable is None:
+        raise RuntimeError(
+            f"{spec.executable} is not on PATH, so the {spec.language} adapter cannot run"
+        )
 
-    # The limits the case asks for, not whatever the adapter defaults to. A case that declares a budget of
-    # 400 steps is testing what happens at 400 steps; running it at the default 200,000 still ends in
-    # `step_limit` and still looks like a pass, while having tested something the case never asked about.
+    # The limits the case asks for, not whatever the adapter defaults to. A case that declares a budget of 400
+    # steps is testing what happens at 400 steps; running it at the default 200,000 still ends in `step_limit`
+    # and still looks like a pass, while having tested something the case never asked about.
     limits_in = case.expect.get("limits") or {}
     max_steps = int(limits_in.get("max_steps", 200_000))
-    wall_ms = int(limits_in.get("wall_ms", 30_000))
+    wall_ms = int(limits_in.get("wall_ms", spec.default_wall_ms))
 
-    cli = REPO / "adapters" / "javascript" / "src" / "cli.js"
-    with tempfile.TemporaryDirectory(prefix="flow_view_js_") as workdir:
-        program = Path(workdir) / "main.js"
+    entry = REPO.joinpath(*spec.entry)
+    with tempfile.TemporaryDirectory(prefix=f"flow_view_{spec.language}_") as workdir:
+        program = Path(workdir) / spec.source_name
         program.write_text(source, encoding="utf-8")
         completed = subprocess.run(
             [
-                node,
-                str(cli),
+                executable,
+                str(entry),
                 "--source",
                 str(program),
                 "--max-steps",
@@ -728,7 +846,7 @@ def run_javascript(case: Case) -> Trace:
             ],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=spec.timeout_s,
             input=case.expect.get("stdin") or "",
         )
 
@@ -741,6 +859,8 @@ def run_javascript(case: Case) -> Trace:
         try:
             parsed = json.loads(line)
         except json.JSONDecodeError:
+            # One malformed line must not cost the whole run. A trace that is missing an event is still worth
+            # checking, and the checks themselves will notice what is absent.
             continue
         if "session" in parsed:
             header = parsed
@@ -749,11 +869,11 @@ def run_javascript(case: Case) -> Trace:
 
     if not header:
         raise RuntimeError(
-            f"the JavaScript adapter produced no header.\nstderr:\n{completed.stderr[-2000:]}"
+            f"the {spec.language} adapter produced no header.\nstderr:\n{completed.stderr[-2000:]}"
         )
 
-    # The adapter reports how the run ended in `run_end`, which is the same place the Python adapter's
-    # status comes from - it just happens to return it directly there.
+    # How the run ended is reported in `run_end`, which is the same place the Python adapter's status comes from
+    # - it just happens to return it directly there.
     ended = [e for e in events if e.get("t") == "run_end"]
     status = ended[-1].get("status", "error") if ended else "error"
 
@@ -765,7 +885,15 @@ def run_javascript(case: Case) -> Trace:
     )
 
 
-ADAPTERS: dict[str, Callable[[Case], Trace]] = {"python": run_python, "javascript": run_javascript}
+#: Adapters that exist. A language is added here once its adapter is built, and the same corpus then governs it
+#: with no new expectations to write.
+ADAPTERS: dict[str, Callable[[Case], Trace]] = {
+    "python": run_python,
+    **{
+        spec.language: functools.partial(run_spawned, spec)
+        for spec in SPAWNED
+    },
+}
 
 
 def write_trace(case: Case, language: str, trace: Trace) -> Path:
@@ -838,13 +966,15 @@ def coverage_report(cases: list[Case]) -> list[str]:
     return lines
 
 
-def run_all(*, write: bool = True) -> list[Result]:
+def run_all(*, write: bool = True, only_language: str | None = None) -> list[Result]:
     results: list[Result] = []
     written: list[str] = []
     if write:
         clear_traces()
     for case in load_cases():
         for language, adapter in ADAPTERS.items():
+            if only_language is not None and language != only_language:
+                continue
             if case.source_for(language) is None:
                 continue
             trace = adapter(case)
@@ -856,21 +986,48 @@ def run_all(*, write: bool = True) -> list[Result]:
     return results
 
 
-def main() -> int:
-    results = run_all()
+def main(argv: list[str] | None = None) -> int:
+    """Run the corpus.
+
+    `--language <name>` narrows it to one adapter. That exists for the mutation gate, which puts a bug back into
+    one adapter and needs to know whether the corpus notices: running all three languages to find out about one
+    of them took long enough that the gate could not finish inside a single invocation.
+
+    A narrowed run never writes traces. The recorded set on disk is meant to be the whole corpus — the replay
+    suite checks it against a manifest precisely so a partial run cannot masquerade as a complete one.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    only_language: str | None = None
+    if "--language" in argv:
+        index = argv.index("--language")
+        if index + 1 >= len(argv):
+            print("--language needs a value, for example: --language java")
+            return 2
+        only_language = argv[index + 1]
+        if only_language not in ADAPTERS:
+            print(f"there is no {only_language} adapter; known: {', '.join(ADAPTERS)}")
+            return 2
+
+    write = only_language is None
+    results = run_all(write=write, only_language=only_language)
     failed = [result for result in results if not result.passed]
     for result in results:
         print(result.describe())
     print()
     print(f"{len(results) - len(failed)}/{len(results)} passed")
-    print()
-    print("coverage")
-    for line in coverage_report(load_cases()):
-        print(f"  {line}")
+
+    if only_language is None:
+        print()
+        print("coverage")
+        for line in coverage_report(load_cases()):
+            print(f"  {line}")
     print()
     if failed:
         return 1
-    print(f"traces written to {TRACE_OUT.relative_to(REPO)} for the replay suite")
+    if write:
+        print(f"traces written to {TRACE_OUT.relative_to(REPO)} for the replay suite")
+    else:
+        print(f"narrowed to {only_language}, so no traces were written")
     return 0
 
 

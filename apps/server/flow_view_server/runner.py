@@ -29,9 +29,11 @@ import json
 import os
 import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
@@ -147,6 +149,97 @@ def _python_adapter(workdir: str, limits: "RunLimits") -> Adapter:
     )
 
 
+#: Where the Java adapter lives. A single source file, run without being built.
+_JAVA_ROOT = Path(__file__).resolve().parents[3] / "adapters" / "java"
+
+
+def java_adapter_source() -> Path | None:
+    """The Java tracer's source file, wherever it ended up.
+
+    Installed, it is shipped beside this package; in a checkout it is under `adapters/java`. Looked for in both
+    places rather than guessed at, because an installed flow_view that reported Java as available and then
+    failed to find its own adapter would be the worst of both answers.
+    """
+    installed = Path(__file__).resolve().parent / "adapters" / "java" / "src" / "FlowViewTracer.java"
+    if installed.is_file():
+        return installed
+    tracer = _JAVA_ROOT / "src" / "FlowViewTracer.java"
+    return tracer if tracer.is_file() else None
+
+
+@lru_cache(maxsize=1)
+def java_executable() -> str | None:
+    """The real `java` binary, not whatever is first on PATH.
+
+    A version manager — mise, asdf, sdkman — puts a *shim* on PATH: a small script that works out which
+    installed version to dispatch to, using the environment it was started with. The child process here is
+    started with almost no environment on purpose, and `HOME` deliberately points at the run directory rather
+    than the user's, so the shim cannot find its own configuration and fails with
+
+        mise ERROR java is not a valid shim
+
+    before the JVM is ever reached. Asking Java where it lives, once, in *this* process where the environment is
+    intact, sidesteps the shim entirely. Nothing about the scrubbing has to be relaxed to make Java work.
+    """
+    found = shutil.which("java")
+    if found is None:
+        return None
+    try:
+        result = subprocess.run(
+            [found, "-XshowSettings:properties", "-version"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return found
+
+    # `-XshowSettings` writes to stderr.
+    for line in (result.stderr or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("java.home"):
+            _, _, home = stripped.partition("=")
+            candidate = Path(home.strip()) / "bin" / "java"
+            if candidate.is_file():
+                return str(candidate)
+    return found
+
+
+def _java_adapter(workdir: str, limits: "RunLimits") -> Adapter:
+    tracer = java_adapter_source()
+    if tracer is None:
+        raise FileNotFoundError(
+            "The Java adapter is not installed alongside this server, so Java cannot be run."
+        )
+    java = java_executable()
+    if java is None:
+        raise FileNotFoundError("Java is not on PATH, so Java cannot be run.")
+
+    return Adapter(
+        language="java",
+        source_name="Main.java",
+        # Source-file mode: `java Tracer.java` compiles and runs it in one step, so the adapter needs no
+        # build. The tracer then compiles the *user's* program itself and drives it in a third JVM.
+        launcher=[java],
+        script=tracer,
+        accepts=frozenset(
+            {
+                "--session-id",
+                "--max-steps",
+                "--wall-ms",
+                "--memory-mb",
+                "--output-bytes",
+            }
+        ),
+        env={},
+        # The tracer is a JVM and so is the program it drives, and neither can start inside a 512MB
+        # address-space ceiling. The memory limit that does apply is passed to the program's own JVM as a
+        # heap cap, by the tracer.
+        address_space_rlimit=False,
+    )
+
+
 def _javascript_adapter(workdir: str, limits: "RunLimits") -> Adapter:
     root = javascript_adapter_root()
     if root is None:
@@ -194,6 +287,7 @@ def _javascript_adapter(workdir: str, limits: "RunLimits") -> Adapter:
 _ADAPTERS: dict[str, Callable[[str, "RunLimits"], Adapter]] = {
     "python": _python_adapter,
     "javascript": _javascript_adapter,
+    "java": _java_adapter,
 }
 
 
@@ -527,13 +621,29 @@ class Runner:
                     continue
 
         if process is not None:
-            for pipe in (process.stdin, process.stdout, process.stderr):
+            # Released in the order asyncio expects, while the loop is still running.
+            #
+            # Left to garbage collection, the subprocess transport closes its pipes from a finalizer — and if the
+            # loop has gone by then, that finalizer raises `RuntimeError: Event loop is closed`. The warning
+            # appears or does not depending on when the collector happens to run, which is precisely the kind of
+            # intermittent failure this project has already chased down once before.
+            if process.stdin is not None:
+                try:
+                    process.stdin.close()
+                except Exception:
+                    pass
+            for pipe in (process.stdout, process.stderr):
                 transport = getattr(pipe, "_transport", None)
                 if transport is not None:
                     try:
                         transport.close()
                     except Exception:
                         pass
+            # Returns at once for a process that has already finished, and is what lets the transport go.
+            try:
+                await process.wait()
+            except Exception:
+                pass
 
         if self._workdir:
             shutil.rmtree(self._workdir, ignore_errors=True)

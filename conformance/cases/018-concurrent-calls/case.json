@@ -1,0 +1,24 @@
+{
+  "name": "concurrent-calls",
+  "description": "Two calls to the same function, in flight at the same time, each waiting on something slow. They are siblings: neither is inside the other, and neither is a recursive call of the other. A tracer that keeps one stack of open frames will say otherwise, because both are open at once \u2014 and the trace it produces looks confident and is wrong. Python does not yet cover this case: its adapter has the same class of defect, reported differently, and the details are in docs/findings/python-async-frames.md.",
+  "concepts": [
+    "concurrency",
+    "frames",
+    "waiting"
+  ],
+  "expect": {
+    "status": "ok",
+    "stdout": "3 300\n",
+    "frames_balanced": true,
+    "sibling_calls": [
+      {
+        "func": "work",
+        "count": 2,
+        "returns": [
+          3,
+          300
+        ]
+      }
+    ]
+  }
+}

@@ -11,6 +11,7 @@
     "no_steps_inside_library": true
   },
   "not_applicable": {
-    "javascript": "JavaScript's standard library is native code, so a call into it has no frames to hide in the first place. `JSON.stringify` never enters instrumented source, which means the property this case tests holds trivially and cannot be observed: there is no library frame to report. A JavaScript case worth writing here would need an imported package, which is a different thing to test and belongs with module support."
+    "javascript": "JavaScript's standard library is native code, so a call into it has no frames to hide in the first place. `JSON.stringify` never enters instrumented source, which means the property this case tests holds trivially and cannot be observed: there is no library frame to report. A JavaScript case worth writing here would need an imported package, which is a different thing to test and belongs with module support.",
+    "java": "The Java adapter keeps library code out by telling the JVM never to report it: `java.*`, `javax.*`, `jdk.*`, `sun.*` and `com.sun.*` are excluded from stepping and from method entry, so a call into the standard library costs one step and generates no frames. The property this case tests therefore holds by construction and leaves nothing to observe -- there is no library frame to report, because one is never created. Testing it for Java would mean asserting the absence of something that cannot occur."
   }
 }

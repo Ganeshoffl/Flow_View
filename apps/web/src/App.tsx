@@ -65,6 +65,28 @@ for (let i = 1; i < 6; i++) {
 
 console.log(values);
 `,
+  // The class has to be called Main: the server writes the program to Main.java, because a Java file and the
+  // public class inside it must agree on their name.
+  java: `import java.util.ArrayList;
+import java.util.List;
+
+public class Main {
+    static int fact(int n) {
+        if (n <= 1) {
+            return 1;
+        }
+        return n * fact(n - 1);
+    }
+
+    public static void main(String[] args) {
+        List<Integer> values = new ArrayList<>();
+        for (int i = 1; i < 6; i++) {
+            values.add(fact(i));
+        }
+        System.out.println(values);
+    }
+}
+`,
 };
 
 const FALLBACK_STARTER = "";

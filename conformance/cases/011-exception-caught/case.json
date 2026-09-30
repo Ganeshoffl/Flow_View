@@ -27,6 +27,9 @@
   "expect_per_language": {
     "javascript": {
       "stdout": "null 42\n"
+    },
+    "java": {
+      "stdout": "null 42\n"
     }
   }
 }

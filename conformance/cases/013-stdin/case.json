@@ -13,6 +13,7 @@
       "name": "Ada",
       "age": 36
     },
+    "_note_on_stdout": "Python's input(prompt) writes the prompt itself, so it never reaches stdout. Java and JavaScript have no equivalent: a Java program prints its own prompt with System.out.print, which really is program output and really does belong in stdout. The prompt is still reported with the request in every language.",
     "stdin_exchanges": [
       {
         "prompt": "Name: ",
@@ -23,5 +24,10 @@
         "answer": "36"
       }
     ]
+  },
+  "expect_per_language": {
+    "java": {
+      "stdout": "Name: Age: Ada 36\n"
+    }
   }
 }
