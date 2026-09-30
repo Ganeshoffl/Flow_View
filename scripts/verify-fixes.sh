@@ -364,6 +364,18 @@ check_vitest "one exception reported once per frame it crosses" "$JS_RUNTIME" \
 
 # A truncated run still has to close what it opened, and emission is switched off when a budget bites.
 # $'...' so the newline is a real one: _mutate.py replaces text literally and does not read escapes.
+# A frame parked at an `await` is open but not running. Treating the top of the stack as "where we are" made two
+# concurrent calls look like one nested inside the other, and like recursion because they share a name.
+check_corpus "a suspended call treated as the one that is running" "$JS_RUNTIME" \
+  '      if (!this.frames.get(id)?.suspended) return id;' \
+  '      return id;'
+
+# A program whose last statement is `main()` leaves its real work queued. Closing the trace when the module body
+# returns reported success while the output had not happened yet.
+check_corpus "the trace closed before the program finished" "$JS_CLI" \
+  '    await settled(tracer, args.wallMs);' \
+  '    if (false) await settled(tracer, args.wallMs);'
+
 check_corpus "a truncated run leaving its frames open" "$JS_RUNTIME" \
   $'  seal() {\n    this.stopped = false;' \
   $'  seal() {\n    if (false) this.stopped = false;' \

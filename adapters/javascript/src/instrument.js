@@ -40,6 +40,15 @@ export const RUNTIME = "__flowView";
 const ERR = "__flowViewErr";
 
 /**
+ * The binding holding the frame this code is running in.
+ *
+ * Declared once per function, because "the frame we are in" cannot be recovered from a stack when more than one
+ * call is open at a time. Two concurrent `async` calls are both open, and the one that is *running* is whichever
+ * is not sitting at an `await` — which only the code inside it knows.
+ */
+const FRAME = "__flowViewFrame";
+
+/**
  * Nothing here passes a frame id.
  *
  * The first version numbered frames at instrumentation time, one per function in the source. That is
@@ -77,8 +86,11 @@ export function instrument(source, options = {}) {
   const edits = new MagicString(source);
   const state = { nextRegion: 0 };
 
-  // The module body is a frame like any other, so the stack pane has something to show at depth zero.
+  // The module body is a frame like any other, so the stack pane has something to show at depth zero. It needs a
+  // frame binding of its own for the same reason a function does: top-level `await` suspends it.
+  edits.appendLeft(0, `const ${FRAME}=${RUNTIME}.currentFrame();`);
   instrumentBody(ast.body, edits, source, state, functionScope([]));
+  instrumentAwaits({ type: "Program", body: ast.body }, edits);
 
   return { code: edits.toString(), lineCount: source.split("\n").length, path };
 }
@@ -336,8 +348,9 @@ function instrumentFunction(fn, edits, source, state, parentScope, name) {
   const named = params.filter((p) => p !== null);
   const argPairs = named.map((p) => `${JSON.stringify(p)}:${p}`).join(",");
 
-  const enter = `${RUNTIME}.enter(${JSON.stringify(name)},${fn.loc.start.line},{${argPairs}});`;
-  const leave = `${RUNTIME}.leave();`;
+  // The frame id is kept in a local, so this function always knows which frame is its own.
+  const enter = `const ${FRAME}=${RUNTIME}.enter(${JSON.stringify(name)},${fn.loc.start.line},{${argPairs}});`;
+  const leave = `${RUNTIME}.leave(${FRAME});`;
 
   // The `catch` exists only to notice that an exception is leaving, so a loop this frame abandoned can be
   // reported as ending by `exception` rather than by `return`. It re-throws the same object, so the
@@ -353,7 +366,53 @@ function instrumentFunction(fn, edits, source, state, parentScope, name) {
     edits.appendLeft(fn.body.start, `{${enter}try{return ${RUNTIME}.returned(`);
     edits.appendRight(fn.body.end, `);${unwind}}`);
   }
+
+  // Awaits belonging to *this* function, so it can say when it stops and starts running.
+  instrumentAwaits(fn.body, edits);
 }
+
+/**
+ * Mark where a function stops running and starts again.
+ *
+ * `await x` becomes `resumed(frame, await suspending(frame, x))`. The value is passed straight through both, so
+ * the program's behaviour is untouched — all that changes is that the tracer knows this frame is parked.
+ *
+ * Without it, a frame suspended at an `await` still looks like the innermost thing running, so the next call is
+ * reported as happening *inside* it. That is how two sibling calls came to look like recursion.
+ *
+ * Nested functions are skipped: their awaits belong to their own frames, and each is instrumented when that
+ * function is.
+ */
+function instrumentAwaits(body, edits) {
+  forEachAwait(body, (node) => {
+    if (!node.argument) return;
+    edits.appendLeft(node.start, `${RUNTIME}.resumed(${FRAME},`);
+    edits.appendLeft(node.argument.start, `${RUNTIME}.suspending(${FRAME},`);
+    edits.appendRight(node.argument.end, `))`);
+  });
+}
+
+/** Visit every `await` that belongs to this function, without descending into nested ones. */
+function forEachAwait(node, visit) {
+  if (node === null || typeof node !== "object") return;
+  if (FUNCTIONS.has(node.type)) return;
+  if (node.type === "AwaitExpression") visit(node);
+  for (const key of Object.keys(node)) {
+    if (key === "loc" || key === "start" || key === "end" || key === "type") continue;
+    const child = node[key];
+    if (Array.isArray(child)) {
+      for (const each of child) forEachAwait(each, visit);
+    } else if (child && typeof child === "object" && typeof child.type === "string") {
+      forEachAwait(child, visit);
+    }
+  }
+}
+
+const FUNCTIONS = new Set([
+  "FunctionDeclaration",
+  "FunctionExpression",
+  "ArrowFunctionExpression",
+]);
 
 /** The names a statement brings into scope. */
 function declaredNames(statement) {

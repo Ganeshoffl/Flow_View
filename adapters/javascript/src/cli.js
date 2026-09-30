@@ -143,10 +143,11 @@ async function main(argv) {
 
   globalThis[RUNTIME] = tracer;
   tracer.start();
+  let moduleFrame;
   if (args.unknown.length > 0) {
     tracer.note("warn", `Ignored unrecognised options: ${args.unknown.join(" ")}`);
   }
-  tracer.enter("<module>", 1, {});
+  moduleFrame = tracer.enter("<module>", 1, {});
 
   let status = "ok";
   let exitCode = 0;
@@ -155,6 +156,12 @@ async function main(argv) {
     // being written to disk.
     const url = `data:text/javascript;base64,${Buffer.from(instrumented.code).toString("base64")}`;
     await import(url);
+    // The module body finishing is not the program finishing.
+    //
+    // A program whose last statement is `main()` returns a promise and leaves its real work queued. Closing the
+    // trace here reported `ok` while the output had not been produced yet — the answer the program existed to
+    // print never appeared in the trace at all.
+    await settled(tracer, args.wallMs);
   } catch (error) {
     if (error instanceof BudgetExceeded) {
       status = tracer.stopReason ?? "step_limit";
@@ -172,9 +179,37 @@ async function main(argv) {
   // how it finished. A budget stop leaves emission switched off, so it has to be switched back on first or
   // the trace ends with a frame that was pushed and never popped.
   tracer.seal();
-  tracer.leave();
+  tracer.leave(moduleFrame);
+  // Anything the program left parked — a promise nothing resolved, a call still awaiting — closed so the trace
+  // does not end with frames it opened and never accounted for.
+  tracer.closeAbandoned();
   tracer.finish(status, exitCode);
   return status === "ok" || status === "step_limit" || status === "timeout" ? 0 : 1;
+}
+
+/**
+ * Wait until the program has no work left, or until its time is up.
+ *
+ * `beforeExit` is the event loop saying it has nothing further to do, which is the only accurate answer to "has
+ * this program finished". Polling for it would be guesswork, and finishing as soon as the module body returns is
+ * wrong for any program that does its work in a promise.
+ *
+ * The deadline is `unref`'d deliberately: a referenced timer is itself work, so it would keep the loop alive and
+ * `beforeExit` would never fire. Unreferenced, it still goes off on time — it simply does not hold the door open.
+ */
+function settled(tracer, wallMs) {
+  return new Promise((resolve) => {
+    const remaining = Math.max(0, wallMs - tracer.elapsedMs());
+    const deadline = setTimeout(() => {
+      tracer.note("warn", "The program still had work queued when its time ran out.");
+      resolve();
+    }, remaining);
+    deadline.unref();
+    process.once("beforeExit", () => {
+      clearTimeout(deadline);
+      resolve();
+    });
+  });
 }
 
 /** How a value appears in captured output. `console.log` does not stringify the way `String` does. */

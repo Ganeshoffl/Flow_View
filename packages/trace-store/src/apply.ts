@@ -39,6 +39,8 @@ export type UndoDetail =
   | { k: "framePush"; frame: number }
   | {
       k: "framePop";
+      /** Where in the open-frame order it sat, so undoing puts it back there. */
+      orderIndex: number;
       frame: number;
       returnValue: Value | undefined;
       poppedAtStep: number | undefined;
@@ -296,13 +298,23 @@ function applyCore(state: TraceState, event: TraceEvent, out: UndoDetail[]): voi
 
     case "frame_pop": {
       const frame = requireFrame(state, event.frame, "frame_pop");
-      const top = state.frameOrder[state.frameOrder.length - 1];
-      if (top !== frame.frame) {
-        throw new Error(`frame_pop: ${frame.frame} is not innermost (${String(top)} is)`);
+      // Removed by identity, not from the end.
+      //
+      // This used to insist the frame being closed was the innermost one, and threw otherwise. That holds for a
+      // program doing one thing at a time and fails for any program that does not: two `async` calls both have
+      // open frames, and the one that finishes first closes first whichever was opened first. The store refused
+      // to replay such a trace at all.
+      //
+      // The position is recorded so the undo can put it back where it was, which is what keeps stepping backwards
+      // exact rather than approximately right.
+      const at = state.frameOrder.lastIndexOf(frame.frame);
+      if (at < 0) {
+        throw new Error(`frame_pop: ${frame.frame} was not open`);
       }
       out.push({
         k: "framePop",
         frame: frame.frame,
+        orderIndex: at,
         returnValue: frame.returnValue,
         poppedAtStep: frame.poppedAtStep,
         poppedAtMs: frame.poppedAtMs,
@@ -312,7 +324,7 @@ function applyCore(state: TraceState, event: TraceEvent, out: UndoDetail[]): voi
       frame.returnValue = event.return_value;
       frame.poppedAtStep = event.step ?? state.step;
       frame.poppedAtMs = event.ms;
-      state.frameOrder.pop();
+      state.frameOrder.splice(at, 1);
       state.lastPoppedFrame = frame.frame;
       return;
     }
@@ -554,7 +566,9 @@ function revertDetail(state: TraceState, event: TraceEvent, detail: UndoDetail):
       frame.returnValue = detail.returnValue;
       frame.poppedAtStep = detail.poppedAtStep;
       frame.poppedAtMs = detail.poppedAtMs;
-      state.frameOrder.push(detail.frame);
+      // Back where it was, not on the end. With concurrent calls the frame that closed may have been in the
+      // middle, and putting it back on top would reorder the stack every time someone stepped backwards.
+      state.frameOrder.splice(detail.orderIndex, 0, detail.frame);
       state.lastPoppedFrame = detail.prevLastPopped;
       return;
     }

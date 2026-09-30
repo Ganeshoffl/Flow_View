@@ -172,14 +172,24 @@ export function checkTraceInvariants(trace: Trace): ValidationResult {
         openFrames.push(event.frame ?? -1);
         break;
       case "frame_pop": {
-        const top = openFrames.pop();
-        if (top === undefined) {
+        // Closed by name, not by position. Frames used to have to close innermost-first, which is true of a
+        // program doing one thing at a time and false of any program that does not: two `async` calls waiting on
+        // something both have open frames, and whichever finishes first closes first. What still has to hold is
+        // that a frame may only be closed if it was opened, and only once.
+        if (openFrames.length === 0) {
           errors.push({ path: at(i), message: "frame_pop with no open frame" });
-        } else if (event.frame !== undefined && top !== event.frame) {
-          errors.push({
-            path: at(i),
-            message: `frame_pop closed frame ${event.frame} but ${top} was innermost`,
-          });
+        } else if (event.frame !== undefined) {
+          const index = openFrames.lastIndexOf(event.frame);
+          if (index < 0) {
+            errors.push({
+              path: at(i),
+              message: `frame_pop closed frame ${event.frame}, which was not open`,
+            });
+          } else {
+            openFrames.splice(index, 1);
+          }
+        } else {
+          openFrames.pop();
         }
         break;
       }

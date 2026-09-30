@@ -312,6 +312,7 @@ def verify(case: Case, trace: Trace) -> Result:
     _check_calls(expect, trace, result)
     _check_recursion(expect, trace, result)
     _check_exceptions(expect, trace, result)
+    _check_siblings(expect, trace, result)
     _check_heap(expect, trace, result)
     _check_stdin(expect, trace, result)
     _check_library(expect, trace, result)
@@ -523,6 +524,52 @@ def _check_exceptions(expect: dict[str, Any], trace: Trace, result: Result) -> N
             not trace.of("exception_raise") and not trace.of("exception_uncaught"),
             "a run stopped by a budget must not look like a program that raised",
         )
+
+
+def _check_siblings(expect: dict[str, Any], trace: Trace, result: Result) -> None:
+    """Calls that happen at the same time must be reported as happening beside each other.
+
+    This is what a tracer with one stack of open frames gets wrong. Two calls to the same function, both waiting
+    on something, are both *open* at once — so the second looks nested inside the first, and because they share a
+    name it looks like recursion. The call-stack pane then shows a depth that never existed.
+
+    Checked as three separate claims, because they fail separately: the right number of calls, all with the same
+    caller, none of them claiming to be a recursive call.
+    """
+    for wanted in expect.get("sibling_calls") or []:
+        name = wanted["func"]
+        pushes = [e for e in trace.of("frame_push") if e.get("func") == name]
+        if "count" in wanted:
+            result.check(
+                len(pushes) == wanted["count"],
+                f"calls to {name}: expected {wanted['count']}, got {len(pushes)}",
+            )
+        callers = {e.get("caller") for e in pushes}
+        result.check(
+            len(callers) <= 1,
+            f"concurrent calls to {name} should share one caller, but were reported under {callers} "
+            "- one was placed inside another because both were open at the same time",
+        )
+        depths = {e.get("recursion_depth") for e in pushes}
+        result.check(
+            depths <= {0},
+            f"concurrent calls to {name} are siblings, not recursion, but depths {sorted(depths)} were reported",
+        )
+
+        if "returns" in wanted:
+            # Compared as a set, because concurrent calls finish in whatever order they finish. Which one comes
+            # back first is not something the trace should be pinned to; that both answers arrive, and land on the
+            # right call, is.
+            ids = {e["frame"] for e in pushes}
+            returned = sorted(
+                _decode(e["return_value"], trace)
+                for e in trace.of("frame_pop")
+                if e.get("frame") in ids and "return_value" in e
+            )
+            result.check(
+                returned == sorted(wanted["returns"]),
+                f"returns from {name}: expected {sorted(wanted['returns'])}, got {returned}",
+            )
 
 
 def _check_heap(expect: dict[str, Any], trace: Trace, result: Result) -> None:

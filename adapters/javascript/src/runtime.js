@@ -163,6 +163,26 @@ export class Tracer {
     this.emitEvent(event);
   }
 
+  /**
+   * Close frames the program never came back to.
+   *
+   * A call parked on a promise nothing ever resolves has not returned, and never will. The schema has a word for
+   * exactly this — `implicit` — which is more honest than claiming it returned: a frame that was opened and never
+   * accounted for would leave anyone tracking the call stack waiting for an end that is not coming.
+   */
+  closeAbandoned() {
+    for (const frame of [...this.stack].reverse()) {
+      const state = this.frames.get(frame);
+      this.frames.delete(frame);
+      this.emit("frame_pop", {
+        frame,
+        reason: "implicit",
+        line: state?.line ?? 1,
+      });
+    }
+    this.stack.length = 0;
+  }
+
   /** Emit anything the collapser is still holding. Called once, as the run ends. */
   drainCollapser() {
     if (this.collapser === null) return;
@@ -228,8 +248,20 @@ export class Tracer {
    * Async would break that assumption, and the adapter declines to guess rather than emitting a trace
    * whose frames are quietly wrong.
    */
+  /**
+   * The innermost frame that is actually *running*.
+   *
+   * Not simply the top of the stack. A function suspended at an `await` is still open — it has not returned — but
+   * it is not executing, and whatever runs next is not happening inside it. Taking the top of the stack made two
+   * concurrent calls look like one nested in the other, and because they share a name, like recursion: the
+   * call-stack pane showed a depth that never existed, and the trace said it confidently.
+   */
   currentFrame() {
-    return this.stack.length > 0 ? this.stack[this.stack.length - 1] : undefined;
+    for (let i = this.stack.length - 1; i >= 0; i--) {
+      const id = this.stack[i];
+      if (!this.frames.get(id)?.suspended) return id;
+    }
+    return undefined;
   }
 
   current() {
@@ -249,9 +281,12 @@ export class Tracer {
     const frame = this.nextFrame++;
     const entries = Object.entries(args ?? {});
     // How many calls to this same function are already in progress below us.
+    // Only calls that are *running* count as ancestors. A suspended invocation of the same function is a sibling
+    // waiting its turn, not a level of recursion.
     let depth = 0;
     for (const open of this.stack) {
-      if (this.frames.get(open)?.name === name) depth++;
+      const state = this.frames.get(open);
+      if (state?.name === name && !state.suspended) depth++;
     }
     const caller = this.currentFrame();
 
@@ -272,11 +307,35 @@ export class Tracer {
     return frame;
   }
 
-  /** The call finished, however it finished — this runs from a `finally`, so exceptions come here too. */
-  leave() {
-    const frame = this.currentFrame();
+  /**
+   * A function suspended at an `await`. It is still open, but it is no longer running.
+   *
+   * Passed through rather than acted on, so the awaited value is not touched.
+   */
+  suspending(frame, value) {
+    const state = this.frames.get(frame);
+    if (state) state.suspended = true;
+    return value;
+  }
+
+  /** The await finished and the function is running again. */
+  resumed(frame, value) {
+    const state = this.frames.get(frame);
+    if (state) state.suspended = false;
+    return value;
+  }
+
+  /**
+   * The call finished, however it finished — this runs from a `finally`, so exceptions come here too.
+   *
+   * The frame is named rather than assumed to be the top of the stack. With concurrent calls the top is whichever
+   * one happens to be open, so popping it closed the wrong frame: return values landed on the wrong call and
+   * three frames in a four-frame program were never closed at all.
+   */
+  leave(frame = this.currentFrame()) {
     if (frame === undefined) return;
     const state = this.frames.get(frame);
+    if (state === undefined) return;
 
     // A `return` from inside a loop skips the loopExit that sits after the loop statement, so any region
     // this frame still has open is closed here. Without this the trace would contain a loop_enter with no
@@ -288,7 +347,8 @@ export class Tracer {
       this.closeLoop(region, state?.threw ? "exception" : "return");
     }
 
-    this.stack.pop();
+    const at = this.stack.lastIndexOf(frame);
+    if (at >= 0) this.stack.splice(at, 1);
     this.frames.delete(frame);
 
     const returned = state?.returned;
