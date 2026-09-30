@@ -86,6 +86,29 @@ PY_OK="$(curl -s "http://127.0.0.1:$PORT/api/capabilities" | "$PYTHON" -c \
   'import json,sys; print(any(l["language"]=="python" and l.get("available") for l in json.load(sys.stdin)["languages"]))' 2>/dev/null)"
 [ "$PY_OK" = "True" ] && ok "python is reported as available" || fail "capabilities do not offer python"
 
+# Java too, because the wheel now carries that adapter.
+#
+# It is one source file with no dependencies, so an installed flow_view can trace Java exactly as a checkout
+# can — but only if the file is actually shipped *and* the server looks for it beside the package rather than
+# only in a checkout. Both of those are easy to get wrong in a way no test in the repository would notice,
+# because in a checkout the fallback path always works.
+JAVA_STATE="$(curl -s "http://127.0.0.1:$PORT/api/capabilities" | "$PYTHON" -c \
+  'import json,sys
+entry = next(l for l in json.load(sys.stdin)["languages"] if l["language"] == "java")
+print(entry.get("available"), entry.get("reason") or "")' 2>/dev/null)"
+if command -v javac >/dev/null 2>&1; then
+  case "$JAVA_STATE" in
+    True*) ok "java is reported as available" ;;
+    *) fail "a JDK is installed but the wheel does not offer java: $JAVA_STATE" ;;
+  esac
+else
+  # No JDK here, so unavailable is the right answer — but it has to blame the JDK, not the adapter.
+  case "$JAVA_STATE" in
+    False*JDK*|False*Java*) ok "java is honestly reported as needing a JDK" ;;
+    *) fail "java should report a missing JDK, got: $JAVA_STATE" ;;
+  esac
+fi
+
 echo
 echo "=== trace a program the way the UI does ==="
 # Over the WebSocket, because that is the path a real run takes - and because bare uvicorn ships no

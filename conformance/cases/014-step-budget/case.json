@@ -1,13 +1,13 @@
 {
   "name": "step-budget",
-  "description": "An endless loop. Stopping it is a result, not a crash.",
+  "description": "An endless loop. Stopping it is a result, not a crash. Which ceiling stops it -- steps or the clock -- depends on how fast the adapter is, so the case asks only that one of them did and that the trace admits it.",
   "concepts": [
     "limits",
     "truncation",
     "honesty"
   ],
   "expect": {
-    "status": "step_limit",
+    "stopped_by_budget": true,
     "limits": {
       "max_steps": 400
     },
