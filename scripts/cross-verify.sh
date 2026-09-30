@@ -98,6 +98,10 @@ if [ "$SKIP_BROWSER" -eq 0 ]; then
   run "a live run traces end to end" bash scripts/verify-live.sh cv-live
   run "structures are recognised" bash scripts/verify-heap.sh cv-heap
   run "a program explains itself" bash scripts/verify-narration.sh cv-narr
+  # Each adapter driven through the real UI. The corpus proves the traces are right and the server tests prove
+  # they arrive; only this proves you can pick a language and watch your program run.
+  run "javascript runs in the browser" bash scripts/verify-javascript.sh cv-js
+  run "java runs in the browser" bash scripts/verify-java.sh cv-java
 else
   heading "7. in a real browser"
   echo "  skipped"

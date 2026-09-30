@@ -150,19 +150,79 @@ def language_support() -> tuple[LanguageSupport, ...]:
             )
         )
 
-    java = shutil.which("javac")
-    support.append(
-        LanguageSupport(
-            language="java",
-            available=False,
-            version=_tool_version([java, "-version"]) if java else None,
-            reason="Missing a JDK." if not java else "The Java adapter is not built yet.",
-            remedy="Install a JDK, for example `sudo apt install default-jdk`." if not java else None,
-            planned="phase 9",
-        )
-    )
+    support.append(_java_support())
 
     return tuple(support)
+
+
+#: The oldest Java that can run the adapter. It is written in modern Java — records, switch expressions,
+#: pattern matching for `instanceof` — and needs a compiler that understands them.
+MINIMUM_JAVA_MAJOR = 21
+
+
+def _java_support() -> LanguageSupport:
+    """Whether Java can actually be traced here.
+
+    Three separate things, with three different remedies: a **JDK** rather than a JRE, because tracing needs
+    both `javac` to compile the program and `jdk.jdi` to drive it; a recent enough one; and the adapter itself.
+    """
+    from .runner import java_adapter_source
+
+    java = shutil.which("java")
+    javac = shutil.which("javac")
+    if java is None or javac is None:
+        missing = "Java" if java is None else "the Java compiler"
+        return LanguageSupport(
+            language="java",
+            available=False,
+            reason=(
+                f"Missing {missing}. Tracing Java needs a JDK rather than a JRE: the program is compiled "
+                "with javac and then driven through the JVM's own debug interface."
+            ),
+            remedy=f"Install a JDK {MINIMUM_JAVA_MAJOR} or newer, for example `sudo apt install default-jdk`.",
+        )
+
+    # `java -version` writes to stderr, which `_tool_version` already reads. It writes a whole sentence —
+    # `openjdk version "25.0.2" 2026-01-20` — where every other language reports a bare version, so the number is
+    # pulled out of it. The UI puts this straight into a badge beside the Run button, and the unabridged line
+    # spilled across it.
+    version = _version_number(_tool_version([java, "-version"]))
+    major = _major_version(version)
+    if major is not None and major < MINIMUM_JAVA_MAJOR:
+        return LanguageSupport(
+            language="java",
+            available=False,
+            version=version,
+            reason=f"Java {major} is too old: the adapter needs {MINIMUM_JAVA_MAJOR} or newer.",
+            remedy=f"Install a JDK {MINIMUM_JAVA_MAJOR} or newer.",
+        )
+
+    if java_adapter_source() is None:
+        return LanguageSupport(
+            language="java",
+            available=False,
+            version=version,
+            reason="The Java adapter is not installed alongside this server.",
+            remedy="Run flow_view from a checkout, where adapters/java is present.",
+        )
+
+    return LanguageSupport(language="java", available=True, version=version)
+
+
+def _version_number(reported: str | None) -> str | None:
+    """The version out of a line like `openjdk version "25.0.2" 2026-01-20`."""
+    if not reported:
+        return None
+    start = reported.find('"')
+    if start >= 0:
+        end = reported.find('"', start + 1)
+        if end > start:
+            return reported[start + 1 : end]
+    # Some builds print it bare. Take the first thing that starts with a digit.
+    for word in reported.split():
+        if word and word[0].isdigit():
+            return word
+    return None
 
 
 def capabilities() -> dict[str, object]:

@@ -73,6 +73,15 @@ def node_is_absent() -> bool:
 needs_node = pytest.mark.skipif(node_is_absent(), reason="Node is not installed on this machine")
 
 
+def jdk_is_absent() -> bool:
+    """Whether this machine has a JDK. A JRE is not enough: tracing needs javac and jdk.jdi."""
+    import shutil
+
+    return shutil.which("java") is None or shutil.which("javac") is None
+
+needs_jdk = pytest.mark.skipif(jdk_is_absent(), reason="No JDK on this machine")
+
+
 class TestCapabilities:
     def test_python_is_available(self, client: Any) -> None:
         payload = client.get("/api/capabilities").json()
@@ -83,11 +92,20 @@ class TestCapabilities:
     def test_unbuilt_languages_say_so_and_name_the_phase(self, client: Any) -> None:
         # A language that is merely not built yet must not look like a broken installation.
         payload = client.get("/api/capabilities").json()
-        for language in ("c", "cpp", "java"):
+        for language in ("c", "cpp"):
             item = next(i for i in payload["languages"] if i["language"] == language)
             assert item["available"] is False
             assert item["reason"]
             assert item["planned"]
+
+    @needs_jdk
+    def test_java_is_available(self, client: Any) -> None:
+        payload = client.get("/api/capabilities").json()
+        java = next(item for item in payload["languages"] if item["language"] == "java")
+        assert java["available"] is True
+        assert java["version"]
+        assert not java["reason"]
+        assert not java["planned"]
 
     @needs_node
     def test_javascript_is_available(self, client: Any) -> None:
@@ -266,6 +284,350 @@ class TestRunning:
         result = run_program(client, "puts 1", language="ruby")
         assert result["errors"]
         assert "not available yet" in result["errors"][0]["message"]
+
+
+@needs_jdk
+class TestRunningJava:
+    """The third adapter through the same seams, and a JVM behaves less like the others than Node does.
+
+    Two of these exist because of defects found only by running Java here rather than from a shell: the `java`
+    on PATH is usually a version manager's shim that cannot work in a scrubbed environment, and neither the
+    tracer's JVM nor the program's can start inside the address-space ceiling applied to every other child.
+    """
+
+    JAVA_PROGRAM = (
+        "public class Main {\n"
+        "    static int twice(int n) {\n"
+        "        return n * 2;\n"
+        "    }\n"
+        "\n"
+        "    public static void main(String[] args) {\n"
+        "        int total = 0;\n"
+        "        for (int i = 0; i < 3; i++) {\n"
+        "            total += twice(i);\n"
+        "        }\n"
+        "        System.out.println(total);\n"
+        "    }\n"
+        "}\n"
+    )
+
+    def test_a_trace_survives_the_round_trip_intact(self, client: Any) -> None:
+        result = run_program(client, self.JAVA_PROGRAM, language="java")
+        assert not result["errors"], result["errors"]
+        document = {
+            "schema": result["header"]["schema"],
+            "session": result["header"]["session"],
+            "events": result["events"],
+        }
+        shape = validate_trace(document)
+        assert shape.valid, shape.describe()
+        coherence = check_trace_invariants(document)
+        assert coherence.valid, coherence.describe()
+
+    def test_the_header_says_which_language_ran(self, client: Any) -> None:
+        session = client.post("/api/session").json()
+        with client.websocket_connect(f"/api/session/{session['id']}/ws") as socket:
+            socket.send_json(
+                {"type": "run", "language": "java", "source": self.JAVA_PROGRAM}
+            )
+            first = socket.receive_json()
+            # Drained to the end rather than walked away from.
+            #
+            # Leaving after the first message abandons a live JVM. The server does stop it, but the process
+            # transport is then released while this test is already over, and its finalizer runs against a closed
+            # event loop — surfacing as an unraisable-exception warning blamed on whichever test happened to be
+            # running when the collector woke up. Two JVMs take long enough to die that Java makes this visible.
+            while True:
+                message = socket.receive_json()
+                if message.get("type") in ("complete", "error"):
+                    break
+        assert first["type"] == "session"
+        assert first["session"]["language"] == "java"
+
+    def test_the_tracer_starts_despite_a_version_manager_shim(self, client: Any) -> None:
+        """The JVM has to actually run, in a child with almost no environment.
+
+        `java` on PATH is typically a shim that resolves the version from its own configuration, using `HOME` —
+        which this server points at the run directory. Started that way the shim fails with "java is not a valid
+        shim" and the run dies before the JVM exists. Any output at all proves the real binary was found.
+        """
+        result = run_program(client, self.JAVA_PROGRAM, language="java")
+        assert not result["errors"], result["errors"]
+        printed = "".join(e["text"] for e in result["events"] if e["t"] == "stdout")
+        assert printed == "6\n"
+
+    def test_a_program_that_calls_a_method_reports_the_call(self, client: Any) -> None:
+        result = run_program(client, self.JAVA_PROGRAM, language="java")
+        calls = [e for e in result["events"] if e["t"] == "frame_push" and e["func"] == "twice"]
+        assert len(calls) == 3
+        returns = [
+            e["return_value"]["prim"]
+            for e in result["events"]
+            if e["t"] == "frame_pop" and "return_value" in e
+        ]
+        assert returns == [0, 2, 4]
+
+    def test_an_assignment_is_blamed_on_the_line_that_made_it(self, client: Any) -> None:
+        """Including the first statement of a method, which is the one that gets this wrong.
+
+        A variable is only seen to have changed after the statement that changed it, so the change is attributed
+        to the line that just finished. At the start of a method there is no previous line to fall back on, and
+        without seeding the frame from its entry location every method's opening assignment is reported one line
+        late — pointing the code pane at the statement after the one responsible.
+        """
+        result = run_program(
+            client,
+            "public class Main {\n"          # 1
+            "    public static void main(String[] args) {\n"   # 2
+            "        int first = 10;\n"      # 3
+            "        int second = 20;\n"     # 4
+            "        int third = first + second;\n"  # 5
+            "        System.out.println(third);\n"   # 6
+            "    }\n"
+            "}\n",
+            language="java",
+        )
+        assigned = {
+            e["name"]: e["line"]
+            for e in result["events"]
+            if e["t"] == "var_set" and e["name"] in ("first", "second", "third")
+        }
+        assert assigned == {"first": 3, "second": 4, "third": 5}, assigned
+
+    def test_frames_are_right_after_an_exception_unwinds(self, client: Any) -> None:
+        """The JVM reports no method exit for a method that exits by throwing.
+
+        So the frame stack has to be re-checked against the JVM's rather than trusted. Without that, the frame
+        the exception left stays on the stack forever and everything afterwards — the catch, the output, the
+        return — is attributed to a method that is no longer running.
+        """
+        result = run_program(
+            client,
+            "public class Main {\n"
+            "    static int divide(int a, int b) {\n"
+            "        return a / b;\n"
+            "    }\n"
+            "\n"
+            "    public static void main(String[] args) {\n"
+            "        int result;\n"
+            "        try {\n"
+            "            result = divide(1, 0);\n"
+            "        } catch (ArithmeticException error) {\n"
+            "            result = -1;\n"
+            "        }\n"
+            "        System.out.println(result);\n"
+            "    }\n"
+            "}\n",
+            language="java",
+        )
+        assert not result["errors"], result["errors"]
+        events = result["events"]
+
+        main_frame = next(e["frame"] for e in events if e["t"] == "frame_push" and e["func"] == "main")
+        divide_frame = next(
+            e["frame"] for e in events if e["t"] == "frame_push" and e["func"] == "divide"
+        )
+        assert main_frame != divide_frame
+
+        # The frame that was thrown out of is popped, and said to have been popped for that reason.
+        thrown_out = [
+            e for e in events if e["t"] == "frame_pop" and e["frame"] == divide_frame
+        ]
+        assert thrown_out, "the frame the exception left was never closed"
+        assert thrown_out[0]["reason"] == "exception"
+
+        # And the handler belongs to the method that has the handler.
+        caught = [e for e in events if e["t"] == "exception_catch"]
+        assert caught and caught[0]["frame"] == main_frame
+
+        printed = [e for e in events if e["t"] == "stdout"]
+        assert printed and printed[0]["frame"] == main_frame
+        assert printed[0]["text"] == "-1\n"
+
+    def test_a_loop_reports_its_iterations(self, client: Any) -> None:
+        result = run_program(client, self.JAVA_PROGRAM, language="java")
+        exits = [e for e in result["events"] if e["t"] == "loop_exit"]
+        assert exits and exits[0]["iterations"] == 3
+        assert exits[0]["reason"] == "condition"
+
+    def test_a_failing_program_is_a_result_not_an_error(self, client: Any) -> None:
+        result = run_program(
+            client,
+            "public class Main {\n"
+            "    public static void main(String[] args) {\n"
+            "        int[] values = {1, 2, 3};\n"
+            "        System.out.println(values[7]);\n"
+            "    }\n"
+            "}\n",
+            language="java",
+        )
+        assert not result["errors"], "a program that throws is not a server error"
+        end = [e for e in result["events"] if e["t"] == "run_end"]
+        assert end[0]["status"] == "error"
+        uncaught = [e for e in result["events"] if e["t"] == "exception_uncaught"]
+        assert uncaught and uncaught[0]["type"] == "ArrayIndexOutOfBoundsException"
+        assert uncaught[0]["stack"]
+
+    def test_a_program_that_does_not_compile_says_so_on_its_own_line(self, client: Any) -> None:
+        result = run_program(
+            client,
+            "public class Main {\n    public static void main(String[] args) {\n        int x = ;\n    }\n}\n",
+            language="java",
+        )
+        notes = [e["text"] for e in result["events"] if e["t"] == "note"]
+        assert any("compile" in note.lower() for note in notes), notes
+        end = [e for e in result["events"] if e["t"] == "run_end"]
+        assert end and end[0]["status"] == "error"
+
+    def test_an_endless_loop_is_stopped_rather_than_left_running(self, client: Any) -> None:
+        """A loop written on one line never changes line, so the JVM reports no further steps at all.
+
+        The tracer waited for an event that would never arrive and hung for as long as it was allowed to. The
+        clock is the only thing that can end this run, so the run has to be able to notice the clock while no
+        events are coming.
+        """
+        result = run_program(
+            client,
+            "public class Main {\n"
+            "    public static void main(String[] args) {\n"
+            "        int n = 0;\n"
+            "        while (true) { n += 1; }\n"
+            "    }\n"
+            "}\n",
+            language="java",
+            limits={"wall_ms": 4000},
+        )
+        end = [e for e in result["events"] if e["t"] == "run_end"]
+        assert end and end[0]["status"] in ("timeout", "step_limit")
+        document = {
+            "schema": result["header"]["schema"],
+            "session": result["header"]["session"],
+            "events": result["events"],
+        }
+        # A truncated run still has to close every frame it opened.
+        assert check_trace_invariants(document).valid
+
+    def test_an_object_changing_under_an_unchanged_name_is_still_seen(self, client: Any) -> None:
+        """The name `head` never changes; the structure it points at does.
+
+        Reading state only when the source says it could have changed is what makes this adapter usably fast, and
+        the risk of that is skipping something real. A list grown through an alias, and a chain extended two
+        levels down, are the two shapes that catch it.
+        """
+        result = run_program(
+            client,
+            "import java.util.ArrayList;\n"
+            "import java.util.List;\n"
+            "\n"
+            "public class Main {\n"
+            "    static class Node { int value; Node next; Node(int v) { value = v; next = null; } }\n"
+            "\n"
+            "    public static void main(String[] args) {\n"
+            "        List<Integer> items = new ArrayList<>(List.of(1, 2, 3));\n"
+            "        List<Integer> alias = items;\n"
+            "        alias.add(4);\n"
+            "        Node head = new Node(1);\n"
+            "        head.next = new Node(2);\n"
+            "        head.next.next = new Node(3);\n"
+            "        System.out.println(items.size() + \" \" + head.next.next.value);\n"
+            "    }\n"
+            "}\n",
+            language="java",
+        )
+        assert not result["errors"], result["errors"]
+        printed = "".join(e["text"] for e in result["events"] if e["t"] == "stdout")
+        assert printed == "4 3\n"
+
+        writes = [e for e in result["events"] if e["t"] == "obj_set"]
+        # The append through the alias is a mutation, not part of building the list.
+        assert [w for w in writes if w.get("op") == "append"], "growing a list through an alias was not seen"
+
+        # And the link two levels down, where the reference above it never changed.
+        announced = {e["obj"]: e["type_name"] for e in result["events"] if e["t"] == "obj_new"}
+        nodes = [obj for obj, name in announced.items() if name == "Node"]
+        assert len(nodes) == 3, f"expected three Nodes, got {announced}"
+        links = {
+            (w["obj"], w["value"]["ref"])
+            for w in writes
+            if w.get("key") == "next" and "ref" in w.get("value", {})
+        }
+        assert len(links) == 2, f"expected two links between Nodes, got {links}"
+
+    def test_a_long_loop_arrives_folded_and_still_reports_the_right_answer(
+        self, client: Any
+    ) -> None:
+        """Folding, through the server, with the Java collapser rather than the Python or JavaScript one.
+
+        Folding does not make Java faster — the JVM is stepped through every iteration either way. What it buys
+        is a trace short enough to hold and scrub, with the final state still exact.
+        """
+        result = run_program(
+            client,
+            "public class Main {\n"
+            "    public static void main(String[] args) {\n"
+            "        int total = 0;\n"
+            "        for (int i = 0; i < 500; i++) {\n"
+            "            total += i;\n"
+            "        }\n"
+            "        System.out.println(total);\n"
+            "    }\n"
+            "}\n",
+            language="java",
+            limits={"wall_ms": 120_000},
+        )
+        assert not result["errors"], result["errors"]
+        folds = [e for e in result["events"] if e["t"] == "collapse"]
+        assert folds, "a five-hundred iteration loop must not arrive one step at a time"
+
+        folded = sum(f["iterations"] for f in folds)
+        verbatim = len([e for e in result["events"] if e["t"] == "loop_iter"])
+        assert folded + verbatim == 500, "every iteration must be accounted for exactly once"
+
+        # The work is carried on the fold, not discarded with the steps that did it.
+        iterations_counted = sum(
+            e["delta"] for e in result["events"] if e["t"] == "metric" and e["name"] == "iteration"
+        ) + sum(int((f.get("metrics") or {}).get("iteration", 0)) for f in folds)
+        assert iterations_counted >= 500, iterations_counted
+
+        # And a fold has to say where the span started and where it ended, or it cannot be stepped backwards.
+        for fold in folds:
+            for effect in fold["effects"]:
+                assert "after" in effect, f"a fold left no final value for {effect.get('key')}"
+
+        printed = "".join(e["text"] for e in result["events"] if e["t"] == "stdout")
+        assert printed.strip() == str(sum(range(500)))
+
+    def test_the_heap_holds_the_programs_data_and_not_the_jdks(self, client: Any) -> None:
+        """A `String` is a value to everyone except the JVM, where it is an object full of bookkeeping.
+
+        Left alone, `String label = "hi"` put a `String` in the heap pane carrying `coder`, `hash`,
+        `hashIsZero` and a `byte[]` of character codes.
+        """
+        result = run_program(
+            client,
+            "public class Main {\n"
+            "    public static void main(String[] args) {\n"
+            "        String label = \"hi\";\n"
+            "        Integer boxed = 7;\n"
+            "        int[] numbers = {1, 2, 3};\n"
+            "        System.out.println(label + boxed + numbers[0]);\n"
+            "    }\n"
+            "}\n",
+            language="java",
+        )
+        announced = [e["type_name"] for e in result["events"] if e["t"] == "obj_new"]
+        assert "String" not in announced
+        assert "Integer" not in announced
+        assert "int[]" in announced
+
+        # And the values are still reported, as values.
+        values = {
+            e["name"]: e["value"]
+            for e in result["events"]
+            if e["t"] == "var_set" and e["name"] in ("label", "boxed")
+        }
+        assert values["label"] == {"prim": "hi"}
+        assert values["boxed"] == {"prim": 7}
 
 
 @needs_node

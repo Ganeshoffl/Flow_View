@@ -40,6 +40,10 @@ packages = [
 # origin and needs no dev server and no network. Build it first: pnpm --filter @flow-view/web build
 [tool.hatch.build.targets.wheel.force-include]
 "apps/web/dist" = "flow_view_server/static"
+# The Java adapter, which is one source file and has no dependencies at all, so an installed flow_view can
+# trace Java as well as a checkout can. The JavaScript adapter is deliberately not here: it needs acorn and
+# magic-string from node_modules, which a Python wheel has no business carrying.
+"adapters/java/src/FlowViewTracer.java" = "flow_view_server/adapters/java/src/FlowViewTracer.java"
 
 [tool.pytest.ini_options]
 testpaths = ["packages/trace-schema/python/tests", "adapters"]

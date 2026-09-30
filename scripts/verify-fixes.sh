@@ -131,7 +131,7 @@ check_vitest() {
   unmutate "$file"
 }
 
-# check_corpus <label> <file> <old> <new>
+# check_corpus <label> <file> <old> <new> [language]
 #
 # The conformance corpus is a script rather than a pytest suite, so it needs its own runner. This is the
 # level that catches a wrong *trace* — a mutation can leave every unit test happy and still make the
@@ -145,8 +145,18 @@ check_corpus() {
     rm -f "$BACKUP_DIR/$(key_for "$file").bak"
     return
   fi
+  # Narrowed to the language whose adapter was mutated, worked out from where the file lives. Running all three
+  # to find out about one of them took long enough that the gate could not finish in a single sitting, and a
+  # mutation to the JavaScript adapter has nothing to say about Python's cases.
+  local narrow=""
+  case "$file" in
+    adapters/javascript/*) narrow="--language javascript" ;;
+    adapters/java/*) narrow="--language java" ;;
+  esac
+
   local out status
-  out="$(timeout "$RUN_TIMEOUT" "$PYTHON" conformance/runner.py 2>&1)"
+  # shellcheck disable=SC2086 - narrow is a deliberately word-split flag pair or empty.
+  out="$(timeout "$RUN_TIMEOUT" "$PYTHON" conformance/runner.py $narrow 2>&1)"
   status=$?
   if [ "$status" -eq 124 ]; then
     printf '  \033[33mcaught\033[0m   %-52s by hanging - killed after %ss\n' "$label" "$RUN_TIMEOUT"
@@ -159,9 +169,11 @@ check_corpus() {
     SURVIVORS=$((SURVIVORS + 1))
   fi
   unmutate "$file"
-  # The corpus writes traces as it goes, so a mutated run leaves mutated traces behind for the replay
-  # suite to read. Regenerated here rather than left for whatever runs next.
-  timeout "$RUN_TIMEOUT" "$PYTHON" conformance/runner.py >/dev/null 2>&1
+  # A narrowed run writes no traces, so there is nothing to put back. A full one does, and a mutated full run
+  # would leave mutated traces behind for the replay suite to read.
+  if [ -z "$narrow" ]; then
+    timeout "$RUN_TIMEOUT" "$PYTHON" conformance/runner.py >/dev/null 2>&1
+  fi
 }
 
 heading() { printf '\n\033[1m%s\033[0m\n' "$1"; }
@@ -296,7 +308,8 @@ JS_CLI=adapters/javascript/src/cli.js
 # make the trace slightly wrong, it throws a ReferenceError and kills the program being watched.
 check_corpus "a block treated as part of its enclosing scope" "$JS_INSTRUMENT" \
   'const inner = childScope(scope);' \
-  'const inner = scope;'
+  'const inner = scope;' \
+  javascript
 
 check_vitest "a block treated as part of its enclosing scope (unit)" "$JS_INSTRUMENT" \
   'const inner = childScope(scope);' \
@@ -313,7 +326,8 @@ check_vitest "a loop's own variable left out of its body" "$JS_INSTRUMENT" \
 # innermost return overwrote the rest: fact(4) reported returning 1.
 check_corpus "one frame id shared by every recursive call" "$JS_RUNTIME" \
   'const frame = this.nextFrame++;' \
-  'const frame = 1;'
+  'const frame = 1;' \
+  javascript
 
 check_vitest "one frame id shared by every recursive call (unit)" "$JS_RUNTIME" \
   'const frame = this.nextFrame++;' \
@@ -324,12 +338,14 @@ check_vitest "one frame id shared by every recursive call (unit)" "$JS_RUNTIME" 
 # is nothing left to see.
 check_corpus "an object growing reported as an object being built" "$JS_RUNTIME" \
   'op: had ? "set" : seen ? "append" : "set",' \
-  'op: "set",'
+  'op: "set",' \
+  javascript
 
 # Following only changed slots hid `head.next.next = ...`, because head.next still pointed at the same object.
 check_corpus "the heap walk stopping at an unchanged reference" "$JS_RUNTIME" \
   'if (!isAtomic(slot)) children.push(slot);' \
-  'if (!isAtomic(slot) && !(before.has(key) && sameValue(before.get(key), slot))) children.push(slot);'
+  'if (!isAtomic(slot) && !(before.has(key) && sameValue(before.get(key), slot))) children.push(slot);' \
+  javascript
 
 check_vitest "the heap walk stopping at an unchanged reference (unit)" "$JS_RUNTIME" \
   'if (!isAtomic(slot)) children.push(slot);' \
@@ -338,7 +354,8 @@ check_vitest "the heap walk stopping at an unchanged reference (unit)" "$JS_RUNT
 
 check_corpus "a loop ended by break reported as ended by its condition" "$JS_RUNTIME" \
   'if (kind === "break") this.pendingJump = "break";' \
-  'if (false) this.pendingJump = "break";'
+  'if (false) this.pendingJump = "break";' \
+  javascript
 
 check_vitest "one exception reported once per frame it crosses" "$JS_RUNTIME" \
   'if (this.unwinding !== NOTHING && Object.is(this.unwinding, error)) return;' \
@@ -349,7 +366,8 @@ check_vitest "one exception reported once per frame it crosses" "$JS_RUNTIME" \
 # $'...' so the newline is a real one: _mutate.py replaces text literally and does not read escapes.
 check_corpus "a truncated run leaving its frames open" "$JS_RUNTIME" \
   $'  seal() {\n    this.stopped = false;' \
-  $'  seal() {\n    if (false) this.stopped = false;'
+  $'  seal() {\n    if (false) this.stopped = false;' \
+  javascript
 
 check_vitest "a fold swallowing output and exceptions" "$JS_COLLAPSE" \
   'if (!FOLDABLE.has(kind)) {' \
@@ -371,19 +389,104 @@ check_vitest "folding before numbering, so seq and step stay dense" "$JS_RUNTIME
 check "a guard claimed that node does not enforce" "$JS_CLI" \
   '  guards.push("network NOT restricted: node has no permission scope for it");' \
   '  guards.push("network refused");' \
-  apps/server/tests
+  apps/server/tests -k JavaScript
 
 # Node dies with a trap before running a line if RLIMIT_AS is applied to it.
 check "node given an address-space ceiling it cannot boot under" "$RUNNER" \
-  '        address_space_rlimit=False,' \
-  '        address_space_rlimit=True,' \
-  apps/server/tests
+  $'        env={},\n        address_space_rlimit=False,' \
+  $'        env={},\n        address_space_rlimit=True,' \
+  apps/server/tests -k JavaScript
 
 # pnpm hoists dependencies, so the nearest node_modules is a tree of symlinks and the packages live higher up.
 check "only the nearest node_modules granted to node" "$RUNNER" \
   $'            paths.append(modules.resolve())\n    return paths' \
   $'            paths.append(modules.resolve())\n            break\n    return paths' \
-  apps/server/tests
+  apps/server/tests -k JavaScript
+
+heading "the Java adapter"
+
+JAVA_TRACER=adapters/java/src/FlowViewTracer.java
+
+# An assignment is only visible after the line that made it, so the line it is attributed to is the line that
+# just finished — and a method's *first* statement needs the frame seeded from its entry location, or every
+# method's opening assignment is reported one line late.
+check "an assignment blamed on the line after it" "$JAVA_TRACER" \
+  'pushed.line = event.location().lineNumber();' \
+  'pushed.line = 0;' \
+  apps/server/tests -k "Java and not JavaScript"
+
+# JDI reports no method exit for a method that throws, so the frame stack has to be checked rather than trusted.
+# Note this no longer *crashes* — observe() reads the variable table of the method actually running, so the only
+# symptom left is a trace attributing everything after the throw to a method that is no longer on the stack.
+check "the frame stack trusted while an exception unwinds" "$JAVA_TRACER" \
+  '        if (suspect) {
+            reconcile(emitter, state, event.thread());' \
+  '        if (false) {
+            reconcile(emitter, state, event.thread());' \
+  apps/server/tests -k "Java and not JavaScript"
+
+# A body line containing a call is stepped twice per pass: into the call, and again on the way back.
+check "a loop counting the call in its body as another iteration" "$JAVA_TRACER" \
+  'if (frame.line != line) {' \
+  'if (true) {' \
+  apps/server/tests -k "Java and not JavaScript"
+
+# Strings and boxed primitives are values to everyone except the JVM.
+check "the JDK's own bookkeeping shown as the program's data" "$JAVA_TRACER" \
+  'if (value instanceof StringReference) return true;' \
+  'if (false) return true;' \
+  apps/server/tests -k "Java and not JavaScript"
+
+# A collection is library code, and the rule that hides library internals would hide its contents too.
+check "a list's contents hidden as library internals" "$JAVA_TRACER" \
+  'Map<String, Value> collection = collectionSlots(reference);' \
+  'Map<String, Value> collection = null;' \
+  apps/server/tests -k "Java and not JavaScript"
+
+# A single-line infinite loop never changes line, so no further events ever arrive and an unbounded wait hangs.
+# Reverting this is expected to be caught *by hanging*, which the harness reports distinctly.
+check "waiting for an event that will never arrive" "$JAVA_TRACER" \
+  'EventSet set = queue.remove(POLL_MS);' \
+  'EventSet set = queue.remove();' \
+  apps/server/tests -k "Java and not JavaScript"
+
+# Reading state only when the source says it could have changed is what makes Java 1.5x faster. The danger is
+# not that it is slow, it is that it skips something it should have read.
+check "state left unread after a line that changed it" "$JAVA_TRACER" \
+  '            return parsed && !assigning.contains(line) && !mutating.contains(line);' \
+  '            return true;' \
+  apps/server/tests -k "Java and not JavaScript"
+
+check "the heap left unread after a line that mutated it" "$JAVA_TRACER" \
+  '            return !parsed || mutating.contains(line);' \
+  '            return false;' \
+  apps/server/tests -k "Java and not JavaScript"
+
+# Folding hides steps, not effort. A metrics pane fed only the surviving events would under-report the work.
+check "work discarded along with the steps that did it" "$JAVA_TRACER" \
+  '                        metrics.merge(name, delta, Long::sum);' \
+  '                        if (false) metrics.merge(name, delta, Long::sum);' \
+  apps/server/tests -k "Java and not JavaScript"
+
+# The whole point of a fold: it must carry where the span started and where it ended, or a reader can step
+# forward over it and never back.
+check "a fold that forgets the state it passed through" "$JAVA_TRACER" \
+  '                if (deleted) effect.remove("after");
+                else effect.put("after", payload.get("value"));' \
+  '                if (deleted) effect.remove("after");' \
+  apps/server/tests -k "Java and not JavaScript"
+
+# The `java` on PATH is usually a version manager's shim, which cannot resolve itself in a scrubbed environment.
+# Neither the tracer's JVM nor the program's can start inside the address-space ceiling every other child gets.
+check "two JVMs given an address-space ceiling they cannot boot under" "$RUNNER" \
+  $'        # heap cap, by the tracer.\n        address_space_rlimit=False,' \
+  $'        # heap cap, by the tracer.\n        address_space_rlimit=True,' \
+  apps/server/tests -k "Java and not JavaScript"
+
+check "a version manager's shim used instead of the real java" "$RUNNER" \
+  '    java = java_executable()' \
+  '    java = shutil.which("java")' \
+  apps/server/tests -k "Java and not JavaScript"
 
 heading "gates that cannot lie"
 
