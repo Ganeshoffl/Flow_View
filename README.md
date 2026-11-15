@@ -78,9 +78,11 @@ tracer can run unchanged inside Pyodide when the Lite profile lands.
 **Do not bind it to a public interface.** flow_view runs the code you paste. `--host` exists for
 running it on a machine you reach over a trusted network, and its best-effort guards (no sockets, writes
 confined to the run directory, no subprocesses, and POSIX resource limits where available) catch
-accidents, not attackers. Windows does not provide those POSIX limits or process-group reaping;
-capabilities report what is actually active. Exposed publicly it is remote code execution with a
-friendly interface.
+accidents, not attackers. On Windows a Job Object gives the child a best-effort committed-memory limit
+and reaps descendants when the session closes; assignment occurs after process creation, so this is
+**not** a hostile-code sandbox. POSIX CPU/file/address-space rlimits are unavailable on Windows, and
+the capabilities report what is supported, and each run header states which guards actually applied. Exposed publicly it is remote
+code execution with a friendly interface.
 
 ### What actually works right now
 

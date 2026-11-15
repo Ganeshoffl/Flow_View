@@ -35,6 +35,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
+from .windows_job import WindowsJob
+
 __all__ = ["RunLimits", "RunRequest", "Runner", "platform_guards"]
 
 def _adapters_root() -> Path:
@@ -248,6 +250,8 @@ def platform_guards() -> dict[str, bool]:
         "file_size": available,
         "wall_clock": True,
         "process_group_reaping": hasattr(os, "killpg"),
+        "job_object_reaping": os.name == "nt",
+        "job_process_memory": os.name == "nt",
         "temp_working_directory": True,
         "scrubbed_environment": True,
     }
@@ -313,6 +317,7 @@ class Runner:
     def __init__(self, request: RunRequest) -> None:
         self.request = request
         self._process: asyncio.subprocess.Process | None = None
+        self._job: WindowsJob | None = None
         self._workdir: str | None = None
         self._guards = platform_guards()
         self._closed = False
@@ -375,6 +380,10 @@ class Runner:
             # A long JSON line must not be truncated into invalid JSON.
             limit=8 * 1024 * 1024,
         )
+        if os.name == "nt":
+            self._job = WindowsJob.attach(self._process.pid, limits.memory_mb)
+            self._guards["job_object_reaping"] = self._job is not None
+            self._guards["job_process_memory"] = self._job is not None
 
         if self.request.stdin:
             # Prefilled input, so the run produces a fully scrubbable trace with no human involved.
@@ -510,6 +519,15 @@ class Runner:
             return
         self._closed = True
         process = self._process
+
+        if self._job is not None:
+            self._job.close()  # KILL_ON_JOB_CLOSE also reaps any child processes.
+            self._job = None
+            if process is not None and process.returncode is None:
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    pass
 
         if process is not None and process.returncode is None:
             for force, wait in ((False, 2.0), (True, 2.0)):

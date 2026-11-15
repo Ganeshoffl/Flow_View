@@ -288,8 +288,15 @@ async def _pump(websocket: WebSocket, runner: Runner) -> None:
 
             # The header arrives first and alone, so the UI can set up before any event lands.
             if "session" in event:
+                header = dict(event["session"])
+                active = list(header.get("guards_active", []))
+                if runner.guards.get("job_object_reaping"):
+                    active.append("Windows Job Object reaps child processes")
+                if runner.guards.get("job_process_memory"):
+                    active.append("Windows per-process committed-memory limit")
+                header["guards_active"] = active
                 await websocket.send_json(
-                    {"type": "session", "schema": event.get("schema"), "session": event["session"]}
+                    {"type": "session", "schema": event.get("schema"), "session": header}
                 )
                 started = True
                 continue

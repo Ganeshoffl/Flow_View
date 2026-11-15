@@ -214,6 +214,25 @@ class TestRunning:
         guards = result["header"]["session"].get("guards_active")
         assert guards, "a run must state what was protecting it"
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object guard")
+    def test_windows_job_guards_are_reported_after_assignment(self, client: Any) -> None:
+        result = run_program(client, "x = 1\n")
+        active = " ".join(result["header"]["session"].get("guards_active", []))
+        assert "Windows Job Object reaps child processes" in active
+        assert "Windows per-process committed-memory limit" in active
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object guard")
+    def test_windows_failed_job_assignment_is_not_reported_as_active(
+        self, client: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from flow_view_server import runner as runner_module
+
+        monkeypatch.setattr(runner_module.WindowsJob, "attach", lambda *_args: None)
+        result = run_program(client, "x = 1\n")
+        active = " ".join(result["header"]["session"].get("guards_active", []))
+        assert "Windows Job Object" not in active
+        assert "Windows per-process committed-memory limit" not in active
+
     def test_an_infinite_loop_is_stopped_and_still_yields_a_usable_trace(self, client: Any) -> None:
         result = run_program(
             client,
