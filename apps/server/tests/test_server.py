@@ -233,6 +233,25 @@ class TestRunning:
         assert "Windows Job Object" not in active
         assert "Windows per-process committed-memory limit" not in active
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object memory limit")
+    def test_windows_memory_limit_retains_a_valid_partial_trace(self, client: Any) -> None:
+        result = run_program(
+            client,
+            "print('before')\nvalue = bytearray(128 * 1024 * 1024)\nprint('after')\n",
+            limits={"memory_mb": 64},
+        )
+        output = "".join(e["text"] for e in result["events"] if e["t"] == "stdout")
+        assert "before" in output and "after" not in output
+        end = [e for e in result["events"] if e["t"] == "run_end"]
+        assert end, "a memory ceiling should still leave a replayable partial trace"
+        document = {
+            "schema": result["header"]["schema"],
+            "session": result["header"]["session"],
+            "events": result["events"],
+        }
+        assert validate_trace(document).valid
+        assert check_trace_invariants(document).valid
+
     def test_an_infinite_loop_is_stopped_and_still_yields_a_usable_trace(self, client: Any) -> None:
         result = run_program(
             client,
