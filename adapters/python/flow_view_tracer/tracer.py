@@ -278,7 +278,9 @@ class Tracer:
 
     def _is_user_file(self, filename: str) -> bool:
         try:
-            return os.path.abspath(filename) == self.path
+            return os.path.normcase(os.path.abspath(filename)) == os.path.normcase(
+                os.path.abspath(self.path)
+            )
         except Exception:
             return False
 

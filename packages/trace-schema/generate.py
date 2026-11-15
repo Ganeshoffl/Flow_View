@@ -659,7 +659,7 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    model = Model(json.loads(MODEL.read_text()))
+    model = Model(json.loads(MODEL.read_text(encoding="utf-8")))
     if errs := model.validate():
         print("model is invalid:", file=sys.stderr)
         for e in errs:
@@ -676,11 +676,11 @@ def main() -> int:
     for name, text in artifacts.items():
         path = ARTIFACT_PATHS[name]
         if args.check:
-            if not path.exists() or path.read_text() != text:
+            if not path.exists() or path.read_text(encoding="utf-8") != text:
                 stale.append(str(path.relative_to(ROOT)))
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text)
+            path.write_text(text, encoding="utf-8")
 
     if args.check:
         if stale:

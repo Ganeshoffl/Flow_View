@@ -252,6 +252,30 @@ class TestRunning:
         responses = [e for e in result["events"] if e["t"] == "stdin_response"]
         assert len(responses) == 2, "the answers must be recorded so a replay needs no human"
 
+    def test_three_prefilled_questions_are_recorded_in_order(self, client: Any) -> None:
+        result = run_program(
+            client,
+            'a = input("first? ")\nb = input("second? ")\nc = input("third? ")\n'
+            'print(a, b, c)\n',
+            stdin="Ada\nGrace\nLin",
+        )
+        assert not result["errors"]
+        requests = [e for e in result["events"] if e["t"] == "stdin_request"]
+        responses = [e for e in result["events"] if e["t"] == "stdin_response"]
+        assert [e["prompt"] for e in requests] == ["first? ", "second? ", "third? "]
+        assert [e["text"] for e in responses] == ["Ada", "Grace", "Lin"]
+        assert [e["source"] for e in responses] == ["prefilled"] * 3
+        assert "".join(e["text"] for e in result["events"] if e["t"] == "stdout") == (
+            "Ada Grace Lin\n"
+        )
+        document = {
+            "schema": result["header"]["schema"],
+            "session": result["header"]["session"],
+            "events": result["events"],
+        }
+        assert validate_trace(document).valid
+        assert check_trace_invariants(document).valid
+
     def test_an_unbuilt_language_is_refused_clearly(self, client: Any) -> None:
         result = run_program(client, "int main(){}", language="c")
         assert result["errors"]

@@ -512,12 +512,16 @@ class Runner:
         process = self._process
 
         if process is not None and process.returncode is None:
-            for send, wait in ((signal.SIGTERM, 2.0), (signal.SIGKILL, 2.0)):
+            for force, wait in ((False, 2.0), (True, 2.0)):
                 try:
                     if hasattr(os, "killpg"):
-                        os.killpg(os.getpgid(process.pid), send)
-                    else:  # pragma: no cover - platform dependent
-                        process.send_signal(send)
+                        os.killpg(
+                            os.getpgid(process.pid), signal.SIGKILL if force else signal.SIGTERM
+                        )
+                    elif force:
+                        process.kill()
+                    else:
+                        process.terminate()
                 except (ProcessLookupError, PermissionError, OSError):
                     break
                 try:

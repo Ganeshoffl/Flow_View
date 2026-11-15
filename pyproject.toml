@@ -17,7 +17,7 @@ dependencies = []
 # connect. Named explicitly rather than pulling uvicorn[standard], which also brings uvloop, httptools,
 # watchfiles and a YAML parser that none of this uses.
 server = ["fastapi>=0.110", "uvicorn>=0.27", "websockets>=12"]
-dev = ["pytest>=8.0", "ruff>=0.6", "mypy>=1.11"]
+dev = ["pytest>=8.0", "ruff>=0.6", "mypy>=1.11", "httpx2>=2.16"]
 
 [project.scripts]
 flow-view = "flow_view_server.__main__:main"
