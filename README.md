@@ -8,9 +8,10 @@ plain-English account of each step. Step forward, step *backward*, or play it li
 
 Supports **Python, JavaScript, C, C++ and Java**.
 
-> **Status: specification complete, implementation starting.**
-> The design is finished and reviewable — see [the spec](.kiro/specs/flow-view/). Code lands phase by
-> phase from [the implementation plan](.kiro/specs/flow-view/tasks.md).
+> **Status: work in progress.** Python tracing and shared visualizations work; JavaScript tracing
+> works from a source checkout but has an unresolved Windows CRLF stdin conformance failure and is not
+> yet packaged in the wheel. C, C++, Java and browser-only Lite are not implemented. See
+> [the verified audit](PROJECT_AUDIT.md) and [task tracker](TASK_TRACKER.md).
 
 ---
 
@@ -41,22 +42,54 @@ flow-view
 That serves the interface and the API from `127.0.0.1:7474` and opens a browser. No network is
 used after installation, and nothing is sent anywhere.
 
+### Save and reopen a run
+
+After a run finishes, choose **Save session** to download a `.fvtrace.json` file containing the
+Universal Trace and the exact source code. Choose **Open session** to load it later: the file's trace,
+structural invariants and source digest are checked before it is shown. Stepping or rewinding the saved
+trace never runs the program again, and recorded stdin answers replay without prompts. Session files
+stay on your machine; there is no account or upload service. The current browser import/export limit is
+64 MB per file; larger sessions display an explicit warning. Treat imported source as untrusted and
+never execute it unless you deliberately press **Run again**.
+
+## Development checks
+
+Install pnpm 10 and Python 3.10+, then build the web UI **before** installing the editable Python
+package (the wheel includes the built UI):
+
+```sh
+pnpm install --frozen-lockfile
+pnpm --filter @flow-view/web build
+python -m pip install -e '.[server,dev]'
+pnpm schema:check
+python -m pytest packages/trace-schema/python/tests adapters/python/tests apps/server/tests conformance/tests
+python conformance/runner.py
+pnpm test
+```
+
+The development extra includes the HTTP client needed by recent Starlette TestClient releases. The
+full test suite currently has one known JavaScript CRLF stdin failure on Windows; do not interpret a
+partial test command as a green whole-project verification. See `PROJECT_AUDIT.md` for measured gates.
+
 The `[server]` extra is not optional in practice — it carries FastAPI, uvicorn and a WebSocket
 implementation, and every run streams over a WebSocket. The core package stays dependency-free so the
 tracer can run unchanged inside Pyodide when the Lite profile lands.
 
 **Do not bind it to a public interface.** flow_view runs the code you paste. `--host` exists for
-running it on a machine you reach over a trusted network, and the guards it applies (no sockets, writes
-confined to the run directory, no subprocesses, rlimits) are there to catch accidents, not to contain
-someone attacking you. Exposed publicly it is remote code execution with a friendly interface.
+running it on a machine you reach over a trusted network, and its best-effort guards (no sockets, writes
+confined to the run directory, no subprocesses, and POSIX resource limits where available) catch
+accidents, not attackers. Windows does not provide those POSIX limits or process-group reaping;
+capabilities report what is actually active. Exposed publicly it is remote code execution with a
+friendly interface.
 
 ### What actually works right now
 
 | | |
 |---|---|
-| Python | traced, stepped, explained |
-| JavaScript, C, C++, Java | not yet — the adapters are unwritten |
-| Lite profile (no install, in-browser) | not yet — needs Pyodide in a worker |
+| Python | local tracing, interactive stdin and reversible playback verified on Windows |
+| JavaScript | tracing works from a source checkout; Windows CRLF stdin and wheel packaging are open |
+| C, C++, Java | not yet runnable; toolchain availability is reported |
+| Lite profile (no install, in-browser) | not yet — needs Pyodide and JavaScript workers |
 
 The table below is the plan, not the present.
 

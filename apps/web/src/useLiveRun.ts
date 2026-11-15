@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { Session, TraceEvent } from "@flow-view/trace-schema";
+import { SCHEMA_ID, type Session, type Trace, type TraceEvent } from "@flow-view/trace-schema";
 import { TraceStore } from "@flow-view/trace-store";
 
 import { ServerEngine } from "./engine/serverEngine.js";
@@ -25,6 +25,8 @@ export interface LiveRun {
   readonly following: boolean;
   setFollowing: (following: boolean) => void;
   run: (options: RunOptions) => void;
+  importTrace: (trace: Trace) => void;
+  exportTrace: () => Trace | undefined;
   answer: (text: string) => void;
   stop: () => void;
 }
@@ -89,6 +91,26 @@ export function useLiveRun(): LiveRun {
     [engine, store],
   );
 
+  const importTrace = useCallback(
+    (trace: Trace) => {
+      // Import is only exposed while a live run is idle or finished. No adapter is contacted here:
+      // playback of a saved run must never execute its source a second time.
+      store.load(trace);
+      setSession(trace.session);
+      setStatus("complete");
+      setPrompt(undefined);
+      setError(undefined);
+      setFollowing(false);
+    },
+    [store],
+  );
+
+  const exportTrace = useCallback((): Trace | undefined => {
+    const header = store.getSession();
+    if (!header || !store.isComplete) return undefined;
+    return { schema: SCHEMA_ID, session: header, events: [...store.allEvents()] };
+  }, [store]);
+
   const answer = useCallback(
     (text: string) => {
       engine.sendStdin(text);
@@ -109,6 +131,8 @@ export function useLiveRun(): LiveRun {
     following,
     setFollowing,
     run,
+    importTrace,
+    exportTrace,
     answer,
     stop,
   };

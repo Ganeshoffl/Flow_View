@@ -468,7 +468,7 @@ class TestRunningJavaScript:
         assert total > 300
         assert batches < total, "events must be grouped, not sent individually"
 
-    def test_a_long_loop_arrives_folded_and_still_reports_the_right_answer(
+    def test_python_long_loop_arrives_folded_and_still_reports_the_right_answer(
         self, client: Any
     ) -> None:
         """Loop collapsing, through the whole server path rather than in-process.

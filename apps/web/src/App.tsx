@@ -9,7 +9,7 @@
  * nothing here changes.
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import { FIXTURES, getFixture } from "@flow-view/trace-fixtures";
 import {
@@ -28,6 +28,7 @@ import type { Language } from "@flow-view/trace-schema";
 
 import { Editor } from "./Editor.js";
 import { RunControls } from "./RunControls.js";
+import { parseSavedSession, serializeSession, sessionFileLimit } from "./traceFiles.js";
 import { useLiveRun } from "./useLiveRun.js";
 
 type Mode = "run" | "examples";
@@ -122,6 +123,9 @@ function LiveMode({ highlighted, onHighlight }: ModeProps) {
   const [language, setLanguage] = useState<Language>("python");
   const [source, setSource] = useState(STARTERS.python ?? FALLBACK_STARTER);
   const [stdin, setStdin] = useState("");
+  const [recordedSource, setRecordedSource] = useState("");
+  const [sessionError, setSessionError] = useState<string | undefined>();
+  const fileInput = useRef<HTMLInputElement>(null);
 
   // The language of the trace being *shown*, which is not necessarily the one selected: switching the
   // selector while a JavaScript run is on screen must not relabel it as Python and re-highlight it with the
@@ -154,6 +158,8 @@ function LiveMode({ highlighted, onHighlight }: ModeProps) {
 
   const run = useCallback(() => {
     setEditing(false);
+    setRecordedSource(source);
+    setSessionError(undefined);
     live.run({
       source,
       language,
@@ -161,13 +167,48 @@ function LiveMode({ highlighted, onHighlight }: ModeProps) {
     });
   }, [live, source, language, stdin]);
 
+  const saveSession = useCallback(() => {
+    const trace = live.exportTrace();
+    if (!trace) return;
+    const blob = new Blob([serializeSession(trace, recordedSource)], { type: "application/json" });
+    if (blob.size > sessionFileLimit()) {
+      setSessionError("This session is too large to save as a 64 MB portable file.");
+      return;
+    }
+    setSessionError(undefined);
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `flow-view-${trace.session.id}.fvtrace.json`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }, [live, recordedSource]);
+
+  const openSession = useCallback(async (file: File) => {
+    try {
+      if (file.size > sessionFileLimit()) throw new Error("The session exceeds the 64 MB import limit.");
+      const saved = await parseSavedSession(await file.text());
+      live.importTrace(saved.trace);
+      setSource(saved.source);
+      setRecordedSource(saved.source);
+      setLanguage(saved.trace.session.language as Language);
+      setEditing(false);
+      setSessionError(undefined);
+      onHighlight(undefined);
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : "Could not open this session.");
+    }
+  }, [live, onHighlight]);
+
   // The code pane shows the source the *running* trace belongs to, not whatever has been typed
   // since. Highlighting line 4 of a program the user has edited underneath would point at the wrong
   // code entirely.
   const tracedSource = useMemo(() => {
     if (!live.session) return source.split("\n");
-    return live.store.getSession() ? sourceOfRun(live.store, source) : source.split("\n");
-  }, [live.session, live.store, source]);
+    return live.store.getSession()
+      ? sourceOfRun(live.store, recordedSource)
+      : source.split("\n");
+  }, [live.session, live.store, recordedSource, source]);
 
   const started = live.status !== "idle" && live.session !== undefined;
   const showingCode = started && !editing;
@@ -185,6 +226,31 @@ function LiveMode({ highlighted, onHighlight }: ModeProps) {
         canToggleEditing={started}
         onToggleEditing={() => setEditing((value) => !value)}
       />
+      <div className="fv-picker" aria-label="Session files">
+        <button type="button" onClick={saveSession} disabled={!live.store.isComplete}>
+          Save session
+        </button>
+        <button
+          type="button"
+          onClick={() => fileInput.current?.click()}
+          disabled={live.status === "running" || live.status === "starting" || live.status === "awaiting-input"}
+        >
+          Open session
+        </button>
+        <input
+          ref={fileInput}
+          type="file"
+          hidden
+          accept=".json,.fvtrace"
+          aria-label="Select a Flow_View session"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (file) void openSession(file);
+          }}
+        />
+        {sessionError ? <span role="alert" className="fv-note is-warn">{sessionError}</span> : null}
+      </div>
 
       <main className="fv-main">
         <div className="fv-area is-code">
