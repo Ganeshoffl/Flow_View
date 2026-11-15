@@ -588,6 +588,38 @@ class TestAProgramThatStopsToAskAQuestion:
     test that fails rather than hangs.
     """
 
+    def test_three_interactive_questions_complete_in_order(self, client: Any, impatient: None) -> None:
+        session = client.post("/api/session").json()
+        with client.websocket_connect(f"/api/session/{session['id']}/ws") as socket:
+            socket.send_json({
+                "type": "run", "language": "python",
+                "source": 'a = input("first? ")\nb = input("second? ")\n'
+                          'c = input("third? ")\nprint(a, b, c)\n',
+                "limits": {"wall_ms": DEADLOCK_BUDGET_MS},
+            })
+            events: list[dict[str, Any]] = []
+            prompts: list[str] = []
+            answers = iter(["Ada", "Grace", "Lin"])
+            for _ in range(400):
+                message = socket.receive_json()
+                if message["type"] == "events":
+                    for event in message["events"]:
+                        events.append(event)
+                        if event["t"] == "stdin_request":
+                            prompts.append(event["prompt"])
+                            socket.send_json({"type": "stdin", "text": next(answers)})
+                elif message["type"] in ("complete", "error"):
+                    assert message["type"] == "complete", message
+                    break
+            else:
+                pytest.fail("interactive program did not complete")
+        assert prompts == ["first? ", "second? ", "third? "]
+        responses = [e for e in events if e["t"] == "stdin_response"]
+        assert [e["text"] for e in responses] == ["Ada", "Grace", "Lin"]
+        assert [e["source"] for e in responses] == ["interactive"] * 3
+        assert "".join(e["text"] for e in events if e["t"] == "stdout") == "Ada Grace Lin\n"
+        assert any(e["t"] == "run_end" and e["status"] == "ok" for e in events)
+
     def test_the_question_reaches_the_browser_before_the_answer_is_given(self, client: Any, impatient: None) -> None:
         session = client.post("/api/session").json()
 

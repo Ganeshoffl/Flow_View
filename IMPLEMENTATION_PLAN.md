@@ -1,0 +1,21 @@
+# Flow_View implementation plan
+
+Read `PROJECT_AUDIT.md` for the evidence matrix and `.kiro/specs/flow-view/tasks.md` for the original phase gates. Preserve the existing React/Vite + FastAPI + shared Universal Trace architecture. ADRs in `docs/decisions/` govern conflicting older design text. Every gate requires valid observed traces, reversible replay, tests, a build, and (when possible) live visualization; do not replace observations with simulated events.
+
+## Milestones, in dependency order
+
+1. **Baseline/platform reliability (in progress):** repair cross-platform schema generation, Python path identity and Windows process cleanup; declare TestClient dependency. Run schema check, Python tests, adapter conformance, TS tests, build. Record existing failures rather than hiding them. Extend Windows tests where needed. Do not assert Windows process-tree isolation from `process.kill()` alone.
+2. **Python gate:** real recursive program, loops, mutable collections, linked/tree/graph structures, uncaught errors, stdout and three interactive inputs via server; validate schema and forward/inverse replay, truncation and correct final state. Run real-browser fixture and live UI tests when a browser harness is available. Treat Phase 1 as open until these tests pass. Commit and push only a verified Python milestone; if only focused fixes qualify, label them fixes and keep the language gate open.
+3. **JavaScript gate:** fix the CRLF stdin conformance failure; add LF/CRLF tests, verify JS actual execution, heap, exceptions and limits; make the installed distribution include the adapter and its local dependencies, or accurately document it as unavailable after install. Run 16-case corpus, full TS suite, server integration, browser visualization, lint/build; commit/push before native work. Async/imports must not be claimed when unimplemented.
+4. **C gate:** implement compiler discovery, debug build and bounded GDB/MI process, source stepping and real observed frames/locals/addresses/heap mutations with explicit unavailable/optimized-out states. Add C conformance and UI integration without C-only renderer. Test missing-GDB handling, timeouts and cleanup; commit/push before C++.
+5. **C++ gate:** extend common native debugger for recursion, classes/constructors, references, container visibility, lifetimes and pointer structures. Validate against actual debugger values, not inferred addresses; commit/push before Java.
+6. **Java gate:** JDK discovery, compile and JDI/JDWP step/stack/heap/exception observation; schema conversion, cross-language corpus and BST integration; commit/push.
+7. **Cross-cutting gates:** cold keyframes and 100k step seek; fold expansion without losing I/O; three-question interactive replay/back-step; Pyodide/JS worker Lite and offline PWA; persistence; accessibility and responsive layout; production wheel/CLI and clean-environment install. Measure NFR limits, review security statements, update README and CI; push each verified milestone. End with requirement-by-requirement completion report, including unfinished items.
+
+## Workflow at every checkpoint
+
+Before edits inspect status and remote; never replace unrelated work. Run the smallest applicable tests during development, then schema, Python tests, language conformance, TS suite, build, and browser gate where available. Treat skipped gates as open. Document failures and toolchain limits in `TASK_TRACKER.md`. Commit on `development/flow-view-completion` with meaningful scopes and required attribution, push using existing `origin`, then compare remote and local hashes. Never force-push. If auth/network/branch policy prevents push, retain the local commit and stop before the next language.
+
+## Acceptance targets
+
+The Kiro requirements define <50 ms p95 step/back and 100k-step seek, <500 ms first events, ~100 µs Python trace work per step and 30 fps for 500 nodes. These are **targets**, not measured claims in this session. The existing phase document reports warm seek success but dense cold seeks of 163.2 ms. Re-measure on representative hardware and report environment, dataset and methodology before marking the performance gate complete. Follow ADR 0001's bounded heap inspection and disclose incomplete views; no mandatory network calls or AI APIs.
