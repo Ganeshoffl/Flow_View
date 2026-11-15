@@ -42,6 +42,13 @@ describe("reading lines", () => {
     expect(reader.readLine()).toBe("36");
   });
 
+  it("translates CRLF lines without dropping a lone carriage return", () => {
+    const reader = createLineReader(fdWith("Ada\r\n36\r\nlone\r"));
+    expect(reader.readLine()).toBe("Ada");
+    expect(reader.readLine()).toBe("36");
+    expect(reader.readLine()).toBe("lone\r");
+  });
+
   it("keeps the surplus from one read for the next call", () => {
     // A pipe hands over whatever has arrived, which may be several lines at once. Throwing the remainder
     // away would lose every answer after the first.

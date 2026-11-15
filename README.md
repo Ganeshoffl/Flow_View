@@ -8,9 +8,9 @@ plain-English account of each step. Step forward, step *backward*, or play it li
 
 Supports **Python, JavaScript, C, C++ and Java**.
 
-> **Status: work in progress.** Python tracing and shared visualizations work; JavaScript tracing
-> works from a source checkout but has an unresolved Windows CRLF stdin conformance failure and is not
-> yet packaged in the wheel. C, C++, Java and browser-only Lite are not implemented. See
+> **Status: work in progress.** Python and JavaScript tracing and shared visualizations work locally;
+> the JavaScript adapter is bundled in built wheels and requires Node 20+. C, C++, Java and browser-only
+> Lite are not implemented. See
 > [the verified audit](PROJECT_AUDIT.md) and [task tracker](TASK_TRACKER.md).
 
 ---
@@ -54,12 +54,13 @@ never execute it unless you deliberately press **Run again**.
 
 ## Development checks
 
-Install pnpm 10 and Python 3.10+, then build the web UI **before** installing the editable Python
-package (the wheel includes the built UI):
+Install pnpm 10 and Python 3.10+, then build the web UI and bundled JavaScript adapter **before**
+building a wheel (the wheel includes both assets):
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm --filter @flow-view/web build
+pnpm build:js
 python -m pip install -e '.[server,dev]'
 pnpm schema:check
 python -m pytest packages/trace-schema/python/tests adapters/python/tests apps/server/tests conformance/tests
@@ -67,19 +68,19 @@ python conformance/runner.py
 pnpm test
 ```
 
-The development extra includes the HTTP client needed by recent Starlette TestClient releases. The
-full test suite currently has one known JavaScript CRLF stdin failure on Windows; do not interpret a
-partial test command as a green whole-project verification. See `PROJECT_AUDIT.md` for measured gates.
+The development extra includes the HTTP client needed by recent Starlette TestClient releases. See
+`PROJECT_AUDIT.md` for measured gates.
 
 The `[server]` extra is not optional in practice — it carries FastAPI, uvicorn and a WebSocket
 implementation, and every run streams over a WebSocket. The core package stays dependency-free so the
 tracer can run unchanged inside Pyodide when the Lite profile lands.
 
 **Do not bind it to a public interface.** flow_view runs the code you paste. `--host` exists for
-running it on a machine you reach over a trusted network, and its best-effort guards (no sockets, writes
-confined to the run directory, no subprocesses, and POSIX resource limits where available) catch
-accidents, not attackers. On Windows a Job Object gives the child a best-effort committed-memory limit
-and reaps descendants when the session closes; assignment occurs after process creation, so this is
+running it on a machine you reach over a trusted network, and its best-effort guards (filesystem and
+process restrictions where supported, plus POSIX resource limits) catch accidents, not attackers.
+Node's permission model does **not** restrict JavaScript network access. On Windows a Job Object gives
+the child a best-effort committed-memory limit and reaps descendants when the session closes;
+assignment occurs after process creation, so this is
 **not** a hostile-code sandbox. POSIX CPU/file/address-space rlimits are unavailable on Windows, and
 the capabilities report what is supported, and each run header states which guards actually applied. Exposed publicly it is remote
 code execution with a friendly interface.
@@ -89,7 +90,7 @@ code execution with a friendly interface.
 | | |
 |---|---|
 | Python | local tracing, interactive stdin and reversible playback verified on Windows |
-| JavaScript | tracing works from a source checkout; Windows CRLF stdin and wheel packaging are open |
+| JavaScript | local tracing, CRLF stdin and installed-wheel execution verified; requires Node 20+ |
 | C, C++, Java | not yet runnable; toolchain availability is reported |
 | Lite profile (no install, in-browser) | not yet — needs Pyodide and JavaScript workers |
 

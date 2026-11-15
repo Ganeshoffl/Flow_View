@@ -58,18 +58,19 @@ def _adapters_root() -> Path:
 
 ADAPTERS = _adapters_root()
 
-#: Where the JavaScript adapter lives.
-#:
-#: Not resolvable through the import system the way the Python one is — it is not a Python package — so this
-#: is a path from the checkout. An installed wheel does not ship it yet, which is why
-#: :func:`javascript_adapter_root` returns None rather than a path that does not exist: the capability check
-#: reads that as "JavaScript is not available here" and says so, instead of every run failing at spawn.
+#: From a checkout we run the source adapter; from a wheel we load the bundled, dependency-free
+#: JavaScript CLI beside the installed Python server. Never guess a path outside the package.
 _JAVASCRIPT_ROOT = Path(__file__).resolve().parents[3] / "adapters" / "javascript"
+_BUNDLED_JAVASCRIPT_ROOT = Path(__file__).resolve().parent / "js"
 
 
 def javascript_adapter_root() -> Path | None:
-    """The JavaScript adapter's package directory, if it is present."""
-    return _JAVASCRIPT_ROOT if (_JAVASCRIPT_ROOT / "src" / "cli.js").is_file() else None
+    """The source adapter in a checkout, or the self-contained CLI installed in the wheel."""
+    if (_JAVASCRIPT_ROOT / "src" / "cli.js").is_file():
+        return _JAVASCRIPT_ROOT
+    if (_BUNDLED_JAVASCRIPT_ROOT / "cli.mjs").is_file():
+        return _BUNDLED_JAVASCRIPT_ROOT
+    return None
 
 
 def _node_read_paths(workdir: str, root: Path) -> list[Path]:
@@ -159,12 +160,12 @@ def _javascript_adapter(workdir: str, limits: "RunLimits") -> Adapter:
     if node is None:
         raise FileNotFoundError("Node.js is not on PATH, so JavaScript cannot be run.")
 
+    bundled = (root / "cli.mjs").is_file()
+    read_paths = [Path(workdir), root] if bundled else _node_read_paths(workdir, root)
     launcher = [
         node,
-        # The real sandbox for a JavaScript run, and the only one node offers. It has to be applied from
-        # out here: a process cannot switch its own permission model on.
         "--permission",
-        *[f"--allow-fs-read={path}" for path in _node_read_paths(workdir, root)],
+        *[f"--allow-fs-read={path}" for path in read_paths],
         # The memory ceiling, in the same units the request asked for. This is V8's heap limit rather than
         # an address-space rlimit, because RLIMIT_AS does not work here at all: V8 reserves a large virtual
         # region up front, so a 512 MB ceiling stops node *booting* — it dies with a trap before running a
@@ -176,7 +177,7 @@ def _javascript_adapter(workdir: str, limits: "RunLimits") -> Adapter:
         language="javascript",
         source_name="main.js",
         launcher=launcher,
-        script=root / "src" / "cli.js",
+        script=root / "cli.mjs" if bundled else root / "src" / "cli.js",
         accepts=frozenset(
             {
                 "--session-id",

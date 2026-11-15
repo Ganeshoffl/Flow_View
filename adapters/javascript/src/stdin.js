@@ -54,7 +54,9 @@ export function createLineReader(fd = 0, options = {}) {
       if (newline >= 0) {
         const line = pending.slice(0, newline);
         pending = pending.slice(newline + 1);
-        return line;
+        // Windows text files use CRLF. Match a line reader's usual newline translation without
+        // stripping a carriage return that was actually part of a non-CRLF answer.
+        return line.endsWith("\r") ? line.slice(0, -1) : line;
       }
 
       if (atEnd) {

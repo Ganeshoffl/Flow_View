@@ -49,8 +49,8 @@ def _tool_version(command: list[str]) -> str | None:
     return output.splitlines()[0] if output else None
 
 
-#: The oldest Node that can run the adapter. It uses `--permission`, which arrived in 20 and is the only
-#: sandbox node offers; on anything older a run would work but be unguarded, and silently so.
+#: The oldest Node that can run the adapter. It uses `--permission`, which arrived in 20 and is the
+#: best-effort filesystem/child-process guard; it does not restrict networking.
 MINIMUM_NODE_MAJOR = 20
 
 
@@ -81,7 +81,7 @@ def _javascript_support() -> LanguageSupport:
             version=version,
             reason=(
                 f"Node {version} is too old: tracing JavaScript needs {MINIMUM_NODE_MAJOR} or newer for "
-                "the permission model that sandboxes a run."
+                "the permission model used for best-effort process and file guards."
             ),
             remedy=f"Upgrade to Node {MINIMUM_NODE_MAJOR} or newer.",
         )
@@ -92,7 +92,7 @@ def _javascript_support() -> LanguageSupport:
             available=False,
             version=version,
             reason="The JavaScript adapter is not installed alongside this server.",
-            remedy="Run flow_view from a checkout, where adapters/javascript is present.",
+            remedy="Reinstall a wheel containing the JavaScript bundle, or build from a checkout.",
         )
 
     return LanguageSupport(language="javascript", available=True, version=version)
