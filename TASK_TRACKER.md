@@ -17,7 +17,7 @@ Updated 2026-11-16. Branch `development/flow-view-completion`, based on `main` `
 
 - C gate (2026-11-16, Windows): GDB/MI3 adapter, schema/server/packaging and 15 applicable conformance sources are implemented. GCC 16.1/GDB 17.2 observed recursion returns, branching/looping, fast-forwarded invertible pure loops, malloc/calloc/realloc/free, bounded arrays/struct graphs, dangling pointers, faults and interactive scanf/fgets/getchar. Schema/typecheck/package/web builds PASS; Python suite and native/server tests PASS; corpus 48/48, Vitest 1220/1220, native scoped Ruff PASS. A wheel installed outside checkout ran both JS/C socket traces. Edge accepted two live C prompts, displayed three `struct Node` objects and two links, and rewound to step 0 with no page errors. Other OS and Linux CI not yet checked; full Ruff retains inherited failures.
 
-- C checkpoint `8cab2e7` and CI setup fix `8d3ba4e` were pushed and matched `git ls-remote`. First CI run failed at pnpm setup; second reached Python tests and failed. GitHub requires sign-in for full job logs, so CI now emits a bounded failure annotation for diagnosis on the next run; no Linux pass has been claimed.
+- CI diagnostic run `ede2317` exposed three Linux C stdin failures: no `stdin_request` for `scanf` and zero output where input was expected. The GDB adapter now also sets breakpoints for glibc's ISO-versioned scanf/fscanf symbols; targeted Windows tests pass. Linux recheck remains pending.
 
 ## Modified files and checkpoints
 
@@ -33,4 +33,4 @@ The verified platform fix commit changed `packages/trace-schema/generate.py`, `a
 
 ## Exact next task
 
-Read the next CI failure annotation, reproduce/fix the failing Linux tests, push and confirm the new hash before starting C++. Open cross-cutting work: cold 100k-step seek, fold expansion, wider native-memory coverage, Lite/offline, clean-venv dependency installation, full Ruff backlog and hostile-code isolation.
+Verify the Linux C stdin breakpoint fix in CI, address remaining failures if any, and confirm the remote hash before starting C++. Open cross-cutting work: cold 100k-step seek, fold expansion, wider native-memory coverage, Lite/offline, clean-venv dependency installation, full Ruff backlog and hostile-code isolation.

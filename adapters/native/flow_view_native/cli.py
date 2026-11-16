@@ -1065,7 +1065,20 @@ def run(args: argparse.Namespace) -> int:
                         result, _ = debugger.command(f"-break-insert {operation}")
                         if result.name == "done":
                             allocation_breakpoints[result.value["bkpt"]["number"]] = operation
-                    for operation in ("scanf", "fgets", "getchar"):
+                    # glibc rewrites scanf/fscanf calls to ISO-versioned symbols at link time.
+                    # Break at the symbol actually called, not only the source-level spelling.
+                    for operation in (
+                        "scanf",
+                        "__isoc99_scanf",
+                        "__isoc23_scanf",
+                        "fscanf",
+                        "__isoc99_fscanf",
+                        "__isoc23_fscanf",
+                        "fgets",
+                        "__fgets_chk",
+                        "getchar",
+                        "getc",
+                    ):
                         result, _ = debugger.command(f"-break-insert {operation}")
                         if result.name == "done":
                             input_breakpoints[result.value["bkpt"]["number"]] = operation
