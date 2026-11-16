@@ -110,6 +110,39 @@ def _major_version(version: str | None) -> int | None:
     return int(digits) if digits else None
 
 
+def _c_support() -> LanguageSupport:
+    """C needs the compiled-debug CLI and both tools it launches."""
+    from .runner import c_adapter_cli
+
+    compiler = shutil.which("gcc")
+    gdb = shutil.which("gdb")
+    cli = c_adapter_cli()
+    missing: list[str] = []
+    remedies: list[str] = []
+    if not compiler:
+        missing.append("the GCC C compiler")
+        remedies.append("Install GCC and put gcc on PATH.")
+    if not gdb:
+        missing.append("GDB")
+        remedies.append("Install GDB and put gdb on PATH (for example, `sudo apt install gdb`).")
+    if cli is None:
+        missing.append("the compiled-debug C adapter CLI")
+        remedies.append(
+            "Install a build containing the C adapter CLI, or run from a checkout once it lands."
+        )
+    version = _tool_version([compiler, "--version"]) if compiler else None
+    if missing:
+        return LanguageSupport(
+            language="c",
+            available=False,
+            version=version,
+            reason=f"Missing {', '.join(missing)}.",
+            remedy=" ".join(remedies),
+            planned="phase 8" if cli is None else None,
+        )
+    return LanguageSupport(language="c", available=True, version=version)
+
+
 @lru_cache(maxsize=1)
 def language_support() -> tuple[LanguageSupport, ...]:
     """Probe every language flow_view knows about."""
@@ -122,11 +155,11 @@ def language_support() -> tuple[LanguageSupport, ...]:
     ]
 
     support.append(_javascript_support())
+    support.append(_c_support())
 
-    has_gcc = shutil.which("gcc") or shutil.which("cc")
     has_gpp = shutil.which("g++") or shutil.which("clang++")
     gdb = shutil.which("gdb")
-    for language, compiler in (("c", has_gcc), ("cpp", has_gpp)):
+    for language, compiler in (("cpp", has_gpp),):
         missing: list[str] = []
         if not compiler:
             missing.append("a C compiler" if language == "c" else "a C++ compiler")

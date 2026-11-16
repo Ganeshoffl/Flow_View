@@ -66,7 +66,7 @@
     },
     "FreeVia": {
       "doc": "Native deallocation mechanism.",
-      "values": ["free", "delete", "delete_array", "scope_exit"]
+      "values": ["free", "realloc", "delete", "delete_array", "scope_exit"]
     },
     "StdinSource": {
       "doc": "Whether input came from a human at run time or was supplied up front. Measured from how long the read blocked, not assumed.",

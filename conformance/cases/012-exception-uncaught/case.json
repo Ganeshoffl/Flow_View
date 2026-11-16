@@ -19,6 +19,11 @@
       "exceptions": {
         "uncaught": "TypeError"
       }
+    },
+    "c": {
+      "exceptions": {
+        "uncaught": "SIGSEGV"
+      }
     }
   }
 }

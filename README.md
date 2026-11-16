@@ -8,9 +8,9 @@ plain-English account of each step. Step forward, step *backward*, or play it li
 
 Supports **Python, JavaScript, C, C++ and Java**.
 
-> **Status: work in progress.** Python and JavaScript tracing and shared visualizations work locally;
-> the JavaScript adapter is bundled in built wheels and requires Node 20+. C, C++, Java and browser-only
-> Lite are not implemented. See
+> **Status: work in progress.** Python, JavaScript and C tracing work locally; JavaScript needs Node
+> 20+, and C needs GCC and GDB. Built wheels include both adapters. C++, Java and browser-only Lite
+> are not implemented. See
 > [the verified audit](PROJECT_AUDIT.md) and [task tracker](TASK_TRACKER.md).
 
 ---
@@ -75,6 +75,9 @@ The `[server]` extra is not optional in practice — it carries FastAPI, uvicorn
 implementation, and every run streams over a WebSocket. The core package stays dependency-free so the
 tracer can run unchanged inside Pyodide when the Lite profile lands.
 
+The C adapter ships in the wheel but requires GCC and GDB on PATH at runtime. Its native memory
+inspection is bounded; values GDB cannot read are marked unavailable rather than guessed.
+
 **Do not bind it to a public interface.** flow_view runs the code you paste. `--host` exists for
 running it on a machine you reach over a trusted network, and its best-effort guards (filesystem and
 process restrictions where supported, plus POSIX resource limits) catch accidents, not attackers.
@@ -91,7 +94,8 @@ code execution with a friendly interface.
 |---|---|
 | Python | local tracing, interactive stdin and reversible playback verified on Windows |
 | JavaScript | local tracing, CRLF stdin and installed-wheel execution verified; requires Node 20+ |
-| C, C++, Java | not yet runnable; toolchain availability is reported |
+| C | GCC/GDB tracing, pointers, arrays, structs, stdin and reversible playback verified on Windows; other OS pending |
+| C++, Java | not yet runnable; toolchain availability is reported |
 | Lite profile (no install, in-browser) | not yet — needs Pyodide and JavaScript workers |
 
 The table below is the plan, not the present.

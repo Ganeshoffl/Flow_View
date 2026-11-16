@@ -74,9 +74,9 @@ AllocVia = Literal["malloc", "calloc", "realloc", "new", "new_array", "alloca"]
 """Native allocation mechanism."""
 ALLOCVIA_VALUES: tuple[AllocVia, ...] = ("malloc", "calloc", "realloc", "new", "new_array", "alloca",)
 
-FreeVia = Literal["free", "delete", "delete_array", "scope_exit"]
+FreeVia = Literal["free", "realloc", "delete", "delete_array", "scope_exit"]
 """Native deallocation mechanism."""
-FREEVIA_VALUES: tuple[FreeVia, ...] = ("free", "delete", "delete_array", "scope_exit",)
+FREEVIA_VALUES: tuple[FreeVia, ...] = ("free", "realloc", "delete", "delete_array", "scope_exit",)
 
 StdinSource = Literal["interactive", "prefilled"]
 """Whether input came from a human at run time or was supplied up front. Measured from how
@@ -913,7 +913,7 @@ ENUM_VALUES: dict[str, tuple[str, ...]] = {
     "ObjSetOp": ("set", "insert", "append", "delete",),
     "MemRegion": ("heap", "stack",),
     "AllocVia": ("malloc", "calloc", "realloc", "new", "new_array", "alloca",),
-    "FreeVia": ("free", "delete", "delete_array", "scope_exit",),
+    "FreeVia": ("free", "realloc", "delete", "delete_array", "scope_exit",),
     "StdinSource": ("interactive", "prefilled",),
     "MetricName": ("comparison", "swap", "assignment", "call", "iteration", "allocation", "read", "write",),
     "Shape": ("array", "matrix", "string", "tuple", "set", "map", "linked_list", "doubly_linked_list", "circular_linked_list", "binary_tree", "bst", "nary_tree", "directed_graph", "undirected_graph", "stack", "queue", "deque", "object", "unknown",),

@@ -167,11 +167,12 @@ export const ALLOCVIA_VALUES = ["malloc", "calloc", "realloc", "new", "new_array
 /** Native deallocation mechanism. */
 export type FreeVia =
   | "free"
+  | "realloc"
   | "delete"
   | "delete_array"
   | "scope_exit";
 
-export const FREEVIA_VALUES = ["free", "delete", "delete_array", "scope_exit"] as const satisfies readonly FreeVia[];
+export const FREEVIA_VALUES = ["free", "realloc", "delete", "delete_array", "scope_exit"] as const satisfies readonly FreeVia[];
 
 /**
  * Whether input came from a human at run time or was supplied up front. Measured from how long

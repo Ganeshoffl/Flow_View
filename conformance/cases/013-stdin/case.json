@@ -23,5 +23,10 @@
         "answer": "36"
       }
     ]
+  },
+  "expect_per_language": {
+    "c": {
+      "stdout": "Name: Age: Ada 36\n"
+    }
   }
 }

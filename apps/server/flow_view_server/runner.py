@@ -73,6 +73,24 @@ def javascript_adapter_root() -> Path | None:
     return None
 
 
+_NATIVE_ROOT = Path(__file__).resolve().parents[3] / "adapters" / "native" / "flow_view_native"
+
+
+def c_adapter_cli() -> Path | None:
+    """Find the compiled-debug C CLI in a checkout or the installed native package."""
+    checkout_cli = _NATIVE_ROOT / "cli.py"
+    if checkout_cli.is_file():
+        return checkout_cli
+
+    spec = importlib.util.find_spec("flow_view_native")
+    if spec is not None and spec.submodule_search_locations:
+        for location in spec.submodule_search_locations:
+            cli = Path(location) / "cli.py"
+            if cli.is_file():
+                return cli
+    return None
+
+
 def _node_read_paths(workdir: str, root: Path) -> list[Path]:
     """Everything the JavaScript adapter must be able to read, and nothing else.
 
@@ -194,9 +212,31 @@ def _javascript_adapter(workdir: str, limits: "RunLimits") -> Adapter:
     )
 
 
-_ADAPTERS: dict[str, Callable[[str, "RunLimits"], Adapter]] = {
+def _c_adapter(workdir: str, limits: RunLimits) -> Adapter:
+    cli = c_adapter_cli()
+    if cli is None:
+        raise FileNotFoundError(
+            "The compiled-debug C adapter CLI is not installed alongside this server."
+        )
+    if not shutil.which("gcc"):
+        raise FileNotFoundError("GCC is required to trace C programs.")
+    if not shutil.which("gdb"):
+        raise FileNotFoundError("GDB is required to trace C programs.")
+    return Adapter(
+        language="c",
+        source_name="main.c",
+        launcher=[sys.executable, "-I"],
+        script=cli,
+        accepts=frozenset(
+            {"--session-id", "--max-steps", "--wall-ms", "--memory-mb", "--output-bytes"}
+        ),
+    )
+
+
+_ADAPTERS: dict[str, Callable[[str, RunLimits], Adapter]] = {
     "python": _python_adapter,
     "javascript": _javascript_adapter,
+    "c": _c_adapter,
 }
 
 

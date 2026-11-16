@@ -158,10 +158,17 @@ class Trace:
 
     def final_value(self, name: str) -> Any:
         """The last value bound to a name, decoded to a plain Python value."""
-        history = [e for e in self.of("var_set") if e.get("name") == name]
+        history: list[dict[str, Any]] = []
+        for event in self.events:
+            if event.get("t") == "var_set" and event.get("name") == name:
+                history.append(event["value"])
+            elif event.get("t") == "collapse":
+                history.extend(effect["after"] for effect in event.get("effects", [])
+                               if effect.get("kind") == "var" and effect.get("key") == name
+                               and "after" in effect)
         if not history:
             return _MISSING
-        return _decode(history[-1]["value"], self)
+        return _decode(history[-1], self)
 
     def value_history(self, name: str) -> list[Any]:
         return [_decode(e["value"], self) for e in self.of("var_set") if e.get("name") == name]
@@ -513,12 +520,19 @@ def _check_heap(expect: dict[str, Any], trace: Trace, result: Result) -> None:
 
     for group in expect.get("aliases") or []:
         values = [trace.final_value(name) for name in group]
+        # Managed runtimes use object ids; native pointers use the observed address.
+        identities = [
+            value.obj if isinstance(value, _Ref)
+            else value if trace.session.get("language") == "c"
+            and isinstance(value, str) and value.startswith("0x") else None
+            for value in values
+        ]
         result.check(
-            all(isinstance(value, _Ref) for value in values),
-            f"aliases {group} should all be references, got {values!r}",
+            all(identity is not None for identity in identities),
+            f"aliases {group} should all refer to an object or address, got {values!r}",
         )
         result.check(
-            len({value.obj for value in values if isinstance(value, _Ref)}) == 1,
+            len(set(identities)) == 1,
             f"aliases {group} must point at the same object, got {values!r}",
         )
 
@@ -528,6 +542,14 @@ def _check_heap(expect: dict[str, Any], trace: Trace, result: Result) -> None:
         mutations = [
             e for e in trace.of("obj_set") if e.get("op") in ("append", "insert", "delete")
         ]
+        if trace.session.get("language") == "c":
+            # A native pointee has no append operator: count an observed write to
+            # previously uninitialized memory instead of its initial unknown slot.
+            mutations += [
+                e for e in trace.of("obj_set")
+                if e.get("op") == "set" and "unavailable" in e.get("prev", {})
+                and "unavailable" not in e.get("value", {})
+            ]
         result.check(
             len(mutations) == expect["mutation_count"],
             f"mutations: expected {expect['mutation_count']}, got {len(mutations)}",
@@ -765,7 +787,38 @@ def run_javascript(case: Case) -> Trace:
     )
 
 
-ADAPTERS: dict[str, Callable[[Case], Trace]] = {"python": run_python, "javascript": run_javascript}
+def run_c(case: Case) -> Trace:
+    """Run compiled C through its real debugger CLI under the shared corpus contract."""
+    import subprocess
+    import tempfile
+
+    source = case.source_for("c")
+    assert source is not None
+    limits = case.expect.get("limits") or {}
+    cli = REPO / "adapters" / "native" / "flow_view_native" / "cli.py"
+    with tempfile.TemporaryDirectory(prefix="flow_view_c_") as workdir:
+        program = Path(workdir) / "main.c"
+        program.write_text(source, encoding="utf-8")
+        completed = subprocess.run(
+            [sys.executable, "-I", str(cli), "--source", str(program),
+             "--max-steps", str(limits.get("max_steps", 200_000)),
+             "--wall-ms", str(limits.get("wall_ms", 30_000))],
+            input=case.expect.get("stdin") or "", capture_output=True, text=True,
+            timeout=120, cwd=workdir,
+        )
+    try:
+        records = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"C adapter emitted invalid JSON: {completed.stderr[-1000:]}") from error
+    if not records or "session" not in records[0]:
+        raise RuntimeError(f"C adapter produced no header: {completed.stderr[-1000:]}")
+    events = records[1:]
+    status = next((e["status"] for e in reversed(events) if e.get("t") == "run_end"), "error")
+    return Trace(records[0]["schema"], records[0]["session"], events, status)
+
+
+ADAPTERS: dict[str, Callable[[Case], Trace]] = {"python": run_python, "javascript": run_javascript,
+                                                  "c": run_c}
 
 
 def write_trace(case: Case, language: str, trace: Trace) -> Path:

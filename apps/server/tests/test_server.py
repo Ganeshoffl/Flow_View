@@ -83,7 +83,7 @@ class TestCapabilities:
     def test_unbuilt_languages_say_so_and_name_the_phase(self, client: Any) -> None:
         # A language that is merely not built yet must not look like a broken installation.
         payload = client.get("/api/capabilities").json()
-        for language in ("c", "cpp", "java"):
+        for language in ("cpp", "java"):
             item = next(i for i in payload["languages"] if i["language"] == language)
             assert item["available"] is False
             assert item["reason"]
@@ -138,6 +138,99 @@ class TestCapabilities:
             # The probe is cached for the life of the process, so a lie left here would follow every
             # later test.
             capabilities_module.language_support.cache_clear()
+
+    @pytest.mark.parametrize(
+        ("compiler", "gdb", "cli_present", "missing"),
+        [
+            ("gcc", "gdb", False, "adapter CLI"),
+            (None, "gdb", True, "C compiler"),
+            ("gcc", None, True, "GDB"),
+            (None, None, False, "adapter CLI"),
+        ],
+    )
+    def test_c_requires_cli_compiler_and_gdb(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        compiler: str | None,
+        gdb: str | None,
+        cli_present: bool,
+        missing: str,
+    ) -> None:
+        import importlib
+
+        cap = importlib.import_module("flow_view_server.capabilities")
+        runner = importlib.import_module("flow_view_server.runner")
+        monkeypatch.setattr(
+            runner, "c_adapter_cli", lambda: Path("/native/cli.py") if cli_present else None
+        )
+        monkeypatch.setattr(
+            cap.shutil,
+            "which",
+            lambda name: compiler if name == "gcc" else gdb if name == "gdb" else None,
+        )
+        monkeypatch.setattr(cap, "_tool_version", lambda _command: "gcc 13.2")
+
+        result = cap._c_support()
+        assert result.available is False
+        assert missing in (result.reason or "")
+        assert result.remedy
+        assert result.planned == ("phase 8" if not cli_present else None)
+        if compiler is None:
+            assert "GCC" in result.remedy
+        if gdb is None:
+            assert "GDB" in result.remedy
+
+    def test_c_available_only_with_compiled_debug_cli_and_toolchain(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import importlib
+
+        cap = importlib.import_module("flow_view_server.capabilities")
+        runner = importlib.import_module("flow_view_server.runner")
+        cli = Path("/native/cli.py")
+        monkeypatch.setattr(runner, "c_adapter_cli", lambda: cli)
+        monkeypatch.setattr(
+            cap.shutil,
+            "which",
+            lambda name: "gcc" if name == "gcc" else "gdb" if name == "gdb" else None,
+        )
+        monkeypatch.setattr(cap, "_tool_version", lambda _command: "gcc 13.2")
+
+        cap.language_support.cache_clear()
+        try:
+            entry = next(item for item in cap.language_support() if item.language == "c")
+            assert entry.available is True
+            assert entry.version == "gcc 13.2"
+            assert entry.reason is None and entry.remedy is None and entry.planned is None
+            adapter = runner.adapter_for("c", "/tmp", runner.RunLimits())
+            assert adapter.script == cli
+            assert adapter.source_name == "main.c"
+            assert adapter.launcher == [sys.executable, "-I"]
+            assert adapter.accepts == frozenset(
+                {"--session-id", "--max-steps", "--wall-ms", "--memory-mb", "--output-bytes"}
+            )
+        finally:
+            cap.language_support.cache_clear()
+
+    def test_c_cli_is_discovered_in_installed_package(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import importlib
+        from types import SimpleNamespace
+
+        runner = importlib.import_module("flow_view_server.runner")
+        native_package = tmp_path / "flow_view_native"
+        native_package.mkdir()
+        cli = native_package / "cli.py"
+        cli.write_text("# test CLI path\n", encoding="utf-8")
+        monkeypatch.setattr(runner, "_NATIVE_ROOT", tmp_path / "checkout_not_present")
+        monkeypatch.setattr(
+            runner.importlib.util,
+            "find_spec",
+            lambda name: SimpleNamespace(submodule_search_locations=[str(native_package)])
+            if name == "flow_view_native" else None,
+        )
+        assert runner.c_adapter_cli() == cli
 
     def test_a_missing_toolchain_offers_a_remedy(self, client: Any) -> None:
         import shutil
@@ -315,7 +408,7 @@ class TestRunning:
         assert check_trace_invariants(document).valid
 
     def test_an_unbuilt_language_is_refused_clearly(self, client: Any) -> None:
-        result = run_program(client, "int main(){}", language="c")
+        result = run_program(client, "int main(){}", language="cpp")
         assert result["errors"]
         message = result["errors"][0]["message"]
         assert "not available yet" in message
@@ -328,6 +421,62 @@ class TestRunning:
         result = run_program(client, "puts 1", language="ruby")
         assert result["errors"]
         assert "not available yet" in result["errors"][0]["message"]
+
+
+@pytest.mark.skipif(
+    not __import__("shutil").which("gdb") or not __import__("shutil").which("gcc"),
+    reason="C tracing requires GCC and GDB",
+)
+class TestRunningC:
+    def test_stack_heap_stdin_and_replayable_trace(self, client: Any) -> None:
+        result = run_program(
+            client,
+            "#include <stdio.h>\n#include <stdlib.h>\n"
+            "int twice(int x) { return x*2; }\n"
+            "int main(void) {\n int input=0;\n scanf(\"%d\", &input);\n"
+            " int *p=malloc(sizeof(int));\n *p=twice(input);\n"
+            " printf(\"%d\", *p);\n free(p);\n return 0;\n}\n",
+            language="c",
+            stdin="21\n",
+        )
+        assert not result["errors"], result["errors"]
+        events = result["events"]
+        assert "".join(e["text"] for e in events if e["t"] == "stdout") == "42"
+        assert [e["text"] for e in events if e["t"] == "stdin_response"] == ["21"]
+        assert [e["source"] for e in events if e["t"] == "stdin_response"] == ["prefilled"]
+        assert any(e["t"] == "frame_push" and e["func"] == "twice" for e in events)
+        assert any(e["t"] == "obj_set" and e["value"] == {"prim": 42} for e in events)
+        assert len([e for e in events if e["t"] == "mem_alloc"]) == 1
+        assert len([e for e in events if e["t"] == "mem_free"]) == 1
+        assert events[-1]["t"] == "run_end" and events[-1]["status"] == "ok"
+        document = {"schema": result["header"]["schema"],
+                    "session": result["header"]["session"], "events": events}
+        assert validate_trace(document).valid
+        assert check_trace_invariants(document).valid
+
+    def test_c_interactive_input_unblocks_a_paused_run(self, client: Any) -> None:
+        session = client.post("/api/session").json()
+        with client.websocket_connect(f"/api/session/{session['id']}/ws") as socket:
+            socket.send_json({"type": "run", "language": "c", "source":
+                              '#include <stdio.h>\nint main(void){\nint n=0;\n'
+                              'scanf("%d",&n);\nprintf("%d",n*2);\nreturn 0;\n}\n'})
+            events: list[dict[str, Any]] = []
+            for _ in range(400):
+                message = socket.receive_json()
+                if message["type"] == "events":
+                    for event in message["events"]:
+                        events.append(event)
+                        if event["t"] == "stdin_request":
+                            socket.send_json({"type": "stdin", "text": "21"})
+                elif message["type"] in ("complete", "error"):
+                    assert message["type"] == "complete", message
+                    break
+            else:
+                pytest.fail("C input run did not complete")
+        assert [e["text"] for e in events if e["t"] == "stdin_response"] == ["21"]
+        assert [e["source"] for e in events if e["t"] == "stdin_response"] == ["interactive"]
+        assert "".join(e["text"] for e in events if e["t"] == "stdout") == "42"
+        assert events[-1]["status"] == "ok"
 
 
 @needs_node

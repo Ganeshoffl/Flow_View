@@ -33,6 +33,7 @@ build-backend = "hatchling.build"
 packages = [
   "packages/trace-schema/python/flow_view_schema",
   "adapters/python/flow_view_tracer",
+  "adapters/native/flow_view_native",
   "apps/server/flow_view_server",
 ]
 

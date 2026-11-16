@@ -28,5 +28,8 @@
     "javascript": {
       "stdout": "null 42\n"
     }
+  },
+  "not_applicable": {
+    "c": "C has no language-level throw/catch. Signals and setjmp/longjmp do not have the exception semantics tested here; native faults are covered by exception-uncaught."
   }
 }
