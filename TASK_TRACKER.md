@@ -17,7 +17,7 @@ Updated 2026-11-16. Branch `development/flow-view-completion`, based on `main` `
 
 - C gate (2026-11-16, Windows): GDB/MI3 adapter, schema/server/packaging and 15 applicable conformance sources are implemented. GCC 16.1/GDB 17.2 observed recursion returns, branching/looping, fast-forwarded invertible pure loops, malloc/calloc/realloc/free, bounded arrays/struct graphs, dangling pointers, faults and interactive scanf/fgets/getchar. Schema/typecheck/package/web builds PASS; Python suite and native/server tests PASS; corpus 48/48, Vitest 1220/1220, native scoped Ruff PASS. A wheel installed outside checkout ran both JS/C socket traces. Edge accepted two live C prompts, displayed three `struct Node` objects and two links, and rewound to step 0 with no page errors. Other OS and Linux CI not yet checked; full Ruff retains inherited failures.
 
-- C checkpoint `8cab2e7` was pushed; `git ls-remote` matched the local hash. Its first remote CI run failed at `pnpm/action-setup@v4` before any project tests. The redundant action version was removed in favor of `packageManager: pnpm@10.28.1`; the follow-up CI run is pending.
+- C checkpoint `8cab2e7` and CI setup fix `8d3ba4e` were pushed and matched `git ls-remote`. First CI run failed at pnpm setup; second reached Python tests and failed. GitHub requires sign-in for full job logs, so CI now emits a bounded failure annotation for diagnosis on the next run; no Linux pass has been claimed.
 
 ## Modified files and checkpoints
 
@@ -28,9 +28,9 @@ The verified platform fix commit changed `packages/trace-schema/generate.py`, `a
 - Windows Job Object supervision was committed/pushed as `0094584`. Assignment follows spawn and remains best-effort; see `PROJECT_AUDIT.md` for the test evidence and limitations.
 - Python tracer and shared visualization meet the tested Windows language gate: 17/17 Python conformance cases, recursive live UI, 18 fixture rewinds, three-question interactive input and saved-file replay, step-limit and bounded-memory partial traces. Python adapter language milestone tests are now complete **for this Windows environment**; cross-cutting cold-seek/performance, Linux/macOS and malicious-code isolation remain explicitly open.
 - JavaScript CRLF conformance and full TS suite now pass locally. The adapter is bundled in the wheel and verified from an external install directory; Node 20+ is still required. CI wheel smoke is added but not yet run remotely.
-- C runtime tests, wheel and browser visualization pass locally; after this checkpoint is pushed, Linux CI and other-platform GDB behavior still require verification. No C++ or Lite adapter has been verified.
-- The Python/JavaScript commits were pushed and matched remote hashes; C is locally verified but its commit/push is pending. No full project or C++/Java milestone is declared complete.
+- C runtime tests, wheel and browser visualization pass locally; remote Linux Python tests still fail and require diagnosis. No C++ or Lite adapter has been verified.
+- The Python, JavaScript and C commits were pushed and matched remote hashes; C++/Java and full-project gates remain open.
 
 ## Exact next task
 
-Verify the follow-up development-branch CI run, fix any Linux C failures, and confirm its pushed hash before starting C++. Open cross-cutting work: cold 100k-step seek, fold expansion, wider native-memory coverage, Lite/offline, Linux/macOS behavior, clean-venv dependency installation, full Ruff backlog and hostile-code isolation.
+Read the next CI failure annotation, reproduce/fix the failing Linux tests, push and confirm the new hash before starting C++. Open cross-cutting work: cold 100k-step seek, fold expansion, wider native-memory coverage, Lite/offline, clean-venv dependency installation, full Ruff backlog and hostile-code isolation.

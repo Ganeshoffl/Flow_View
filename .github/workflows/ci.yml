@@ -50,9 +50,14 @@ jobs:
 
       - name: Python tests
         run: |
-          PYTHONPATH=packages/trace-schema/python:adapters/python \
+          if ! PYTHONPATH=packages/trace-schema/python:adapters/python \
             python -m pytest packages/trace-schema/python/tests adapters/python/tests \
-                             adapters/native/tests apps/server/tests conformance/tests -q
+                             adapters/native/tests apps/server/tests conformance/tests -q \
+                             > "$RUNNER_TEMP/python-tests.log" 2>&1; then
+            python -I -c 'import os,pathlib; text=(pathlib.Path(os.environ["RUNNER_TEMP"])/"python-tests.log").read_text(encoding="utf-8",errors="replace")[-5500:]; print("::error title=Python tests failed::"+text.replace("%","%25").replace("\r","%0D").replace("\n","%0A"))'
+            exit 1
+          fi
+          python -I -c 'import os,pathlib; print((pathlib.Path(os.environ["RUNNER_TEMP"])/"python-tests.log").read_text(encoding="utf-8",errors="replace").splitlines()[-1])'
 
       # Must run before the TypeScript suite: the replay tests verify real adapter output, and this
       # is what produces it. They fail rather than skip if it is missing.
