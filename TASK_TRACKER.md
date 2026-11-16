@@ -17,6 +17,8 @@ Updated 2026-11-16. Branch `development/flow-view-completion`, based on `main` `
 
 - C gate (2026-11-16, Windows): GDB/MI3 adapter, schema/server/packaging and 15 applicable conformance sources are implemented. GCC 16.1/GDB 17.2 observed recursion returns, branching/looping, fast-forwarded invertible pure loops, malloc/calloc/realloc/free, bounded arrays/struct graphs, dangling pointers, faults and interactive scanf/fgets/getchar. Schema/typecheck/package/web builds PASS; Python suite and native/server tests PASS; corpus 48/48, Vitest 1220/1220, native scoped Ruff PASS. A wheel installed outside checkout ran both JS/C socket traces. Edge accepted two live C prompts, displayed three `struct Node` objects and two links, and rewound to step 0 with no page errors. Other OS and Linux CI not yet checked; full Ruff retains inherited failures.
 
+- C checkpoint `8cab2e7` was pushed; `git ls-remote` matched the local hash. Its first remote CI run failed at `pnpm/action-setup@v4` before any project tests. The redundant action version was removed in favor of `packageManager: pnpm@10.28.1`; the follow-up CI run is pending.
+
 ## Modified files and checkpoints
 
 The verified platform fix commit changed `packages/trace-schema/generate.py`, `adapters/python/flow_view_tracer/tracer.py`, `apps/server/flow_view_server/runner.py`, `apps/server/tests/test_server.py`, and `pyproject.toml`. The subsequent audit checkpoint added `PROJECT_AUDIT.md`, `IMPLEMENTATION_PLAN.md`, and `TASK_TRACKER.md`. The session milestone added three-question interactive socket verification, recovered a shadowed Python folding test, added `apps/web/src/traceFiles.ts` plus UI controls in `App.tsx` and `useLiveRun.ts`, added three saved-trace unit tests, and updated README and audit evidence. The Windows milestone added Job Object process/memory supervision and real Windows tests. The Python regression checkpoint `489a483` was pushed and confirmed. JavaScript changes and verification are recorded below; the prior statement that only this tracker was modified applied before that checkpoint.
@@ -31,4 +33,4 @@ The verified platform fix commit changed `packages/trace-schema/generate.py`, `a
 
 ## Exact next task
 
-Commit and push the verified C Windows gate, confirm remote hash and (if available) Linux CI before starting C++. Open cross-cutting work: cold 100k-step seek, fold expansion, wider native-memory coverage, Lite/offline, Linux/macOS behavior, clean-venv dependency installation, full Ruff backlog and hostile-code isolation.
+Verify the follow-up development-branch CI run, fix any Linux C failures, and confirm its pushed hash before starting C++. Open cross-cutting work: cold 100k-step seek, fold expansion, wider native-memory coverage, Lite/offline, Linux/macOS behavior, clean-venv dependency installation, full Ruff backlog and hostile-code isolation.
