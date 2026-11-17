@@ -1,6 +1,6 @@
 # Flow_View task tracker
 
-Updated 2026-11-16. Branch `development/flow-view-completion`, based on `main` `3e7dc72`. Remote `origin` points to `https://github.com/Ganeshoffl/Flow_View.git`. Verified platform fix `efee4faa36db562e7cc7c4ae8717547de0921c5b`, audit/test checkpoint `29eff269cf05a360797cd7ac69aea6c9bfc18461`, portable-session milestone `9f22f2e88949c43e63a02d97c58118c61ea7a307`, tracker checkpoint `034efcbf14d14ab283bb5f59cae4f1b4a8bdd222`, and Windows job milestone `00945841067d2503453ab9d2f88b8fe31078e759` were pushed and confirmed by `git ls-remote`. Python cross-platform/performance gates remain open; none of these commits asserts a complete sandbox.
+Updated 2026-11-17. Branch `development/flow-view-completion`, based on `main` `3e7dc72`. Remote `origin` points to `https://github.com/Ganeshoffl/Flow_View.git`. Verified platform fix `efee4faa36db562e7cc7c4ae8717547de0921c5b`, audit/test checkpoint `29eff269cf05a360797cd7ac69aea6c9bfc18461`, portable-session milestone `9f22f2e88949c43e63a02d97c58118c61ea7a307`, tracker checkpoint `034efcbf14d14ab283bb5f59cae4f1b4a8bdd222`, and Windows job milestone `00945841067d2503453ab9d2f88b8fe31078e759` were pushed and confirmed by `git ls-remote`. Python cross-platform/performance gates remain open; none of these commits asserts a complete sandbox.
 
 ## Verified this session
 
@@ -17,7 +17,9 @@ Updated 2026-11-16. Branch `development/flow-view-completion`, based on `main` `
 
 - C gate (2026-11-16, Windows): GDB/MI3 adapter, schema/server/packaging and 15 applicable conformance sources are implemented. GCC 16.1/GDB 17.2 observed recursion returns, branching/looping, fast-forwarded invertible pure loops, malloc/calloc/realloc/free, bounded arrays/struct graphs, dangling pointers, faults and interactive scanf/fgets/getchar. Schema/typecheck/package/web builds PASS; Python suite and native/server tests PASS; corpus 48/48, Vitest 1220/1220, native scoped Ruff PASS. A wheel installed outside checkout ran both JS/C socket traces. Edge accepted two live C prompts, displayed three `struct Node` objects and two links, and rewound to step 0 with no page errors. Other OS and Linux CI not yet checked; full Ruff retains inherited failures.
 
-- CI diagnostic run `ede2317` exposed three Linux C stdin failures: no `stdin_request` for `scanf` and zero output where input was expected. The GDB adapter now also sets breakpoints for glibc's ISO-versioned scanf/fscanf symbols; targeted Windows tests pass. Linux recheck remains pending.
+- C Linux gate: GitHub Actions run `43862333384` for pushed `e5b9a99` completed **success** on 2026-11-16. Windows browser/wheel gates and Linux CI pass; C checkpoint is complete for tested platforms. macOS, broader native-memory coverage and security/performance gates remain open.
+
+- C++ gate (2026-11-17, Windows): shared GDB/MI3 adapter traces G++17 classes, constructor/destructor frames, new/delete and arrays, reference identity, typed linked objects/dangling pointers, caught/uncaught exceptions, bounded `std::vector` elements and `std::map` size (entries explicitly unavailable), cin and reversible playback. 16/16 applicable C++ corpus cases pass (1 Python-specific case not applicable); full corpus 64/64, Vitest 1460/1460, Python/native/server tests, schema/typecheck/build, scoped Ruff and backend comparison pass. Wheel installed outside checkout completed JS/C/C++ WebSocket smoke. Edge rendered three linked C++ nodes, vector slots and interactive cin, then rewound each run to step 0 with no page errors. Full Python suite emitted one Windows asyncio transport cleanup warning; Linux CI and macOS C++ gates are pending.
 
 ## Modified files and checkpoints
 
@@ -28,9 +30,9 @@ The verified platform fix commit changed `packages/trace-schema/generate.py`, `a
 - Windows Job Object supervision was committed/pushed as `0094584`. Assignment follows spawn and remains best-effort; see `PROJECT_AUDIT.md` for the test evidence and limitations.
 - Python tracer and shared visualization meet the tested Windows language gate: 17/17 Python conformance cases, recursive live UI, 18 fixture rewinds, three-question interactive input and saved-file replay, step-limit and bounded-memory partial traces. Python adapter language milestone tests are now complete **for this Windows environment**; cross-cutting cold-seek/performance, Linux/macOS and malicious-code isolation remain explicitly open.
 - JavaScript CRLF conformance and full TS suite now pass locally. The adapter is bundled in the wheel and verified from an external install directory; Node 20+ is still required. CI wheel smoke is added but not yet run remotely.
-- C runtime tests, wheel and browser visualization pass locally; remote Linux Python tests still fail and require diagnosis. No C++ or Lite adapter has been verified.
-- The Python, JavaScript and C commits were pushed and matched remote hashes; C++/Java and full-project gates remain open.
+- C runtime tests, wheel, browser and Linux CI pass. C++ local gate passes; Linux CI remains unverified. Lite and Java adapters are not yet implemented.
+- Python, JavaScript and C commits were pushed and matched remote hashes; C++ is verified locally but not yet committed/pushed. Full-project gates remain open.
 
 ## Exact next task
 
-Verify the Linux C stdin breakpoint fix in CI, address remaining failures if any, and confirm the remote hash before starting C++. Open cross-cutting work: cold 100k-step seek, fold expansion, wider native-memory coverage, Lite/offline, clean-venv dependency installation, full Ruff backlog and hostile-code isolation.
+Commit and push the verified C++ Windows gate; confirm its remote hash and Linux CI. Fix any CI failures before beginning Java. Cross-cutting performance, Lite/offline, macOS, clean-venv and full Ruff remain open.

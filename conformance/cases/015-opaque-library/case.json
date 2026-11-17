@@ -12,6 +12,7 @@
   },
   "not_applicable": {
     "javascript": "JavaScript's standard library is native code, so a call into it has no frames to hide in the first place. `JSON.stringify` never enters instrumented source, which means the property this case tests holds trivially and cannot be observed: there is no library frame to report. A JavaScript case worth writing here would need an imported package, which is a different thing to test and belongs with module support.",
-    "c": "This case specifically tests pure-Python library frames. C standard-library calls have no user-source frames; their debugger internals are skipped. A C library-boundary test belongs in the native adapter suite."
+    "c": "This case specifically tests pure-Python library frames. C standard-library calls have no user-source frames; their debugger internals are skipped. A C library-boundary test belongs in the native adapter suite.",
+    "cpp": "This case specifically tests pure-Python library frames. C++ standard-library implementation frames are skipped rather than reported as Python-style library frames; vector boundaries are tested by the native adapter suite."
   }
 }

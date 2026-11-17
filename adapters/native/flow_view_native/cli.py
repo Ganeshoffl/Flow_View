@@ -23,6 +23,7 @@ class Trace:
     def __init__(self, source: Path, args: argparse.Namespace) -> None:
         self.source = source
         self.args = args
+        self.language = args.language
         self.seq = 0
         self.step = 0
         self.start = time.monotonic()
@@ -42,6 +43,7 @@ class Trace:
         self.initialized_locals: set[tuple[int, str]] = set()
         self.return_modes: set[int] = set()
         self.return_values: dict[int, dict[str, Any]] = {}
+        self.pending_exception: dict[str, Any] | None = None
         self.pending_branches: dict[int, tuple[int, str, str, int]] = {}
         self.loop_ranges: set[tuple[int, int]] = set()
         self.loop_bodies: dict[tuple[int, int], int] = {}
@@ -53,6 +55,11 @@ class Trace:
         self.object_slots: dict[int, dict[str, Any]] = {}
         self.announced_objects: set[int] = set()
         self.object_kinds: dict[int, str] = {}
+        self.stack_containers: dict[tuple[int, str], int] = {}
+        self.container_lengths: dict[int, int] = {}
+        self.container_storage: dict[tuple[int, str], str] = {}
+        self.freed_internal: set[str] = set()
+        self.dead_containers: set[tuple[int, str]] = set()
         self.original_bytes: dict[str, str] = {}
         self.raw_bytes: dict[str, str] = {}
         self.initialized: set[str] = set()
@@ -73,8 +80,9 @@ class Trace:
                 function = signature.group(1)
             declaration = re.match(
                 r"\s*(?:(?:const|static|unsigned|signed)\s+)*"
-                r"(?:int|long|short|float|double|char|struct\s+\w+)\s*"
-                r"\*?\s*(\w+)(?:\s*\[\s*\d+\s*\])?\s*(=)?",
+                r"(?:int|long|short|float|double|char|struct\s+\w+|"
+                r"[A-Za-z_]\w*(?:::\w+)*(?:<[^>]+>)?)\s*"
+                r"[*&]?\s*(\w+)(?:\s*\[\s*\d+\s*\])?\s*(=)?",
                 text,
             )
             if function and declaration:
@@ -93,8 +101,8 @@ class Trace:
             "schema": "flow_view/trace@1",
             "session": {
                 "id": self.args.session_id,
-                "language": "c",
-                "language_version": compiler_version(),
+                "language": self.language,
+                "language_version": compiler_version(self.language),
                 "adapter_version": "0.1.0",
                 "profile": "full",
                 "source_files": [
@@ -165,6 +173,9 @@ class Trace:
             self.announce_object(None, "", address, obj, size)
         for frame, _func in reversed(self.frames):
             self.close_loops(frame, "return" if status == "ok" else "exception")
+            for owner, name in list(self.stack_containers):
+                if owner == frame:
+                    self.drop_container(frame, name)
             self.emit("frame_pop", frame=frame, reason="return" if status == "ok" else "exception")
         self.frames.clear()
         payload: dict[str, Any] = {
@@ -247,10 +258,14 @@ class Trace:
                     payload["return_value"] = value
             self.return_modes.discard(frame)
             self.pending_branches.pop(frame, None)
+            for owner, name in list(self.stack_containers):
+                if owner == frame:
+                    self.drop_container(frame, name)
             self.emit("frame_pop", **payload)
             self.bindings.pop(frame, None)
             self.parameters.pop(frame, None)
             self.visited_lines.pop(frame, None)
+            self.dead_containers = {key for key in self.dead_containers if key[0] != frame}
             self.initialized_locals = {key for key in self.initialized_locals if key[0] != frame}
             self.local_baselines = {
                 key: val for key, val in self.local_baselines.items() if key[0] != frame
@@ -282,7 +297,14 @@ class Trace:
                 "frame": frame,
                 "func": func,
                 "args": args_list,
-                "kind": "user",
+                "kind": (
+                    "constructor"
+                    if func.count("::")
+                    and func.rsplit("::", 1)[-1] == func.rsplit("::", 1)[0].rsplit("::", 1)[-1]
+                    else "method"
+                    if "::" in func
+                    else "user"
+                ),
                 "recursion_depth": sum(1 for _id, parent in self.frames if parent == func),
                 "line": int(entry.get("line", 1)),
                 "path": self.source.name,
@@ -331,6 +353,12 @@ class Trace:
         self.emit(
             "step_line", frame=self.current_frame, line=self.current_line, path=self.source.name
         )
+        # At a function epilogue the stack pointer may already have moved; GDB can still
+        # name the frame but its locals now read unrelated caller bytes.
+        if self.current_frame in self.return_modes and self.source_lines[
+            self.current_line - 1
+        ].strip() in {"}", "};"}:
+            return True
         for entry in active:
             frame = self.frames[active.index(entry)][0]
             level = entry["level"]
@@ -360,7 +388,44 @@ class Trace:
                         if raw_value == self.local_baselines.get(key):
                             continue
                         self.initialized_locals.add(key)
-                value = native_value(raw_value, self.source, "", 0)
+                vector = (
+                    self.inspect_vector(debugger, frame, name)
+                    if self.language == "cpp"
+                    and isinstance(raw_value, str)
+                    and "_Vector_base" in raw_value
+                    else None
+                )
+                mapping = (
+                    self.inspect_map(debugger, frame, name)
+                    if vector is None
+                    and self.language == "cpp"
+                    and isinstance(raw_value, str)
+                    and "_Rb_tree" in raw_value
+                    else None
+                )
+                container = vector if vector is not None else mapping
+                value = (
+                    container
+                    if container is not None
+                    else native_value(raw_value, self.source, "", 0)
+                )
+                if self.language == "cpp" and "unavailable" in value and raw_value is not None:
+                    typed, _ = debugger.command(f"-var-create - * {json.dumps(name)}")
+                    if typed.name == "done":
+                        if typed.value.get("type") == "std::nullptr_t":
+                            value = {"prim": None}
+                        debugger.command(f"-var-delete {typed.value['name']}")
+                reference = (
+                    re.match(r"^@(0x[0-9a-fA-F]+):", raw_value)
+                    if self.language == "cpp" and isinstance(raw_value, str)
+                    else None
+                )
+                if reference:
+                    value = {"addr": address_of(reference.group(1)), "type": "C++ reference"}
+                    typed, _ = debugger.command(f"-var-create - * {json.dumps(name)}")
+                    if typed.name == "done":
+                        value["type"] = typed.value.get("type", "C++ reference")
+                        debugger.command(f"-var-delete {typed.value['name']}")
                 if "addr" in value:
                     address = address_of(value["addr"])
                     if address in self.freed and address not in self.allocations:
@@ -399,7 +464,7 @@ class Trace:
                         element_width = int(width.value["value"]) if readable else 0
                         self.announce_object(debugger, name, address, obj, size, element_width)
                         count = size // element_width if element_width and size <= 256 else 0
-                        if self.object_kinds[obj] == "struct":
+                        if self.object_kinds[obj] in {"struct", "instance"}:
                             if address in self.initialized and readable:
                                 self.inspect_fields(debugger, name, address, obj)
                         elif 1 < count <= 16 and size % element_width == 0:
@@ -417,7 +482,14 @@ class Trace:
                             "frame": frame,
                             "name": name,
                             "to_addr": addr,
-                            "valid": addr in self.allocations,
+                            "valid": (
+                                addr in self.allocations
+                                or (
+                                    addr not in self.freed
+                                    and addr != "0x0"
+                                    and self.memory_bytes(debugger, addr, 1) is not None
+                                )
+                            ),
                             "dangling": addr in self.freed and addr not in self.allocations,
                         }
                         if addr in self.allocations:
@@ -438,6 +510,7 @@ class Trace:
             for name, old in self.bindings[frame].items():
                 if name not in current:
                     self.emit("var_del", frame=frame, name=name, prev=old)
+                    self.drop_container(frame, name)
             self.bindings[frame] = current
         return True
 
@@ -461,7 +534,14 @@ class Trace:
                 type_name = result.value.get("type", type_name)
                 debugger.command(f"-var-delete {result.value['name']}")
                 kind = "struct" if type_name.startswith(("struct ", "union ")) else "pointer"
-                if kind != "struct" and width and size > width and size % width == 0:
+                if self.language == "cpp" and int(result.value.get("numchild", "0")) > 0:
+                    kind = "instance"
+                if (
+                    kind not in {"struct", "instance"}
+                    and width
+                    and size > width
+                    and size % width == 0
+                ):
                     kind = "array"
                     length = size // width
         payload: dict[str, Any] = {
@@ -476,6 +556,144 @@ class Trace:
         self.emit("obj_new", **payload)
         self.announced_objects.add(obj)
         self.object_kinds[obj] = kind
+
+    def inspect_map(self, debugger: MIClient, frame: int, name: str) -> dict[str, Any] | None:
+        """Show a std::map's observed identity and size without inventing key/value pairs."""
+        created, _ = debugger.command(f"-var-create - * {json.dumps(name)}")
+        if created.name != "done":
+            return None
+        type_name = created.value.get("type", "")
+        debugger.command(f"-var-delete {created.value['name']}")
+        if not type_name.startswith("std::map<"):
+            return None
+        count, _ = debugger.command(
+            f"-data-evaluate-expression {json.dumps(name + '._M_t._M_impl._M_node_count')}"
+        )
+        address, _ = debugger.command(f"-data-evaluate-expression {json.dumps('&' + name)}")
+        width, _ = debugger.command(
+            f"-data-evaluate-expression {json.dumps('sizeof(' + name + ')')}"
+        )
+        if count.name != address.name or count.name != width.name or count.name != "done":
+            return None
+        try:
+            length = int(count.value["value"])
+            addr = address_of(address.value["value"])
+            object_size = int(width.value["value"])
+        except (KeyError, ValueError, IndexError):
+            return None
+        if length < 0 or length > 1000000 or addr == "0x0":
+            return None
+        key = (frame, name)
+        if key not in self.stack_containers:
+            obj = self.next_object
+            self.next_object += 1
+            self.stack_containers[key] = obj
+            self.container_lengths[obj] = length
+            self.emit(
+                "obj_new",
+                obj=obj,
+                kind="map",
+                type_name=type_name,
+                addr=addr,
+                size=object_size,
+                length=length,
+                summary="std::map entries cannot be enumerated safely",
+            )
+            self.set_slot(
+                obj, "entries", {"unavailable": "GDB cannot safely enumerate map entries"}
+            )
+        obj = self.stack_containers[key]
+        previous = self.container_lengths[obj]
+        if previous != length:
+            self.emit("obj_resize", obj=obj, length=length, prev_length=previous)
+            self.container_lengths[obj] = length
+        return {"ref": obj}
+
+    def inspect_vector(self, debugger: MIClient, frame: int, name: str) -> dict[str, Any] | None:
+        """Expose observed std::vector elements, not libstdc++ allocator internals."""
+        created, _ = debugger.command(f"-var-create - * {json.dumps(name)}")
+        if created.name != "done":
+            return None
+        type_name = created.value.get("type", "")
+        debugger.command(f"-var-delete {created.value['name']}")
+        if not type_name.startswith("std::vector<"):
+            return None
+        key = (frame, name)
+        if key in self.dead_containers:
+            return {"unavailable": "std::vector lifetime ended"}
+        backing, _ = debugger.command(
+            f"-data-evaluate-expression {json.dumps(name + '._M_impl._M_start')}"
+        )
+        if backing.name == "done" and backing.value.get("value", "").startswith("0x"):
+            storage = address_of(backing.value["value"])
+            if (
+                key in self.stack_containers
+                and self.container_storage.get(key) == storage
+                and storage in self.freed_internal
+            ):
+                self.dead_containers.add(key)
+                self.drop_container(frame, name)
+                return {"unavailable": "std::vector storage was released"}
+            self.container_storage[key] = storage
+        size, _ = debugger.command(f"-data-evaluate-expression {json.dumps(name + '.size()')}")
+        address, _ = debugger.command(f"-data-evaluate-expression {json.dumps('&' + name)}")
+        width, _ = debugger.command(
+            f"-data-evaluate-expression {json.dumps('sizeof(' + name + ')')}"
+        )
+        if size.name != address.name or size.name != width.name or size.name != "done":
+            return None
+        try:
+            length = int(size.value["value"])
+            addr = address_of(address.value["value"])
+            object_size = int(width.value["value"])
+        except (KeyError, ValueError, IndexError):
+            return None
+        if length < 0 or length > 1000000 or addr == "0x0":
+            return None
+        if key not in self.stack_containers:
+            obj = self.next_object
+            self.next_object += 1
+            self.stack_containers[key] = obj
+            self.container_lengths[obj] = length
+            self.emit(
+                "obj_new",
+                obj=obj,
+                kind="array",
+                type_name=type_name,
+                addr=addr,
+                size=object_size,
+                length=length,
+                summary="stack-allocated std::vector",
+            )
+        obj = self.stack_containers[key]
+        previous = self.container_lengths[obj]
+        if previous != length:
+            self.emit("obj_resize", obj=obj, length=length, prev_length=previous)
+            self.container_lengths[obj] = length
+        for index in range(min(length, 16)):
+            expression = f"{name}._M_impl._M_start[{index}]"
+            element, _ = debugger.command(f"-data-evaluate-expression {json.dumps(expression)}")
+            value = (
+                native_value(element.value.get("value"), self.source, "", 0)
+                if element.name == "done"
+                else {"unavailable": "vector element unreadable"}
+            )
+            if "addr" in value:
+                target = address_of(value["addr"])
+                if target in self.allocations:
+                    value = {"ref": self.allocations[target][0]}
+                elif target in self.freed_objects:
+                    value = {"ref": self.freed_objects[target]}
+            self.set_slot(obj, str(index), value)
+        return {"ref": obj}
+
+    def drop_container(self, frame: int, name: str) -> None:
+        key = (frame, name)
+        obj = self.stack_containers.pop(key, None)
+        self.container_storage.pop(key, None)
+        if obj is not None:
+            self.emit("obj_free", obj=obj)
+            self.container_lengths.pop(obj, None)
 
     def set_slot(self, obj: int, key: str, value: dict[str, Any]) -> None:
         old = self.object_slots.setdefault(obj, {}).get(key)
@@ -538,6 +756,18 @@ class Trace:
             fields = raw.get("child", []) if isinstance(raw, dict) else []
             if isinstance(fields, dict):
                 fields = [fields]
+            expanded = []
+            for field in fields:
+                if field.get("exp") in {"public", "private", "protected"}:
+                    members, _ = debugger.command(
+                        f"-var-list-children --all-values {field['name']}"
+                    )
+                    children = members.value.get("children", {}) if members.name == "done" else {}
+                    inner = children.get("child", []) if isinstance(children, dict) else []
+                    expanded.extend([inner] if isinstance(inner, dict) else inner)
+                else:
+                    expanded.append(field)
+            fields = expanded[:32]
             baseline = self.original_bytes.get(address)
             current = self.raw_bytes.get(address)
             for field in fields:
@@ -793,11 +1023,73 @@ class Trace:
 
     def returns_integer(self, func: str) -> bool:
         source = self.source.read_text(encoding="utf-8")
-        return bool(re.search(rf"\b(?:int|long|short)\s+{re.escape(func)}\s*\(", source))
+        return bool(
+            re.search(rf"\b(?:int|long|short)\s+{re.escape(func.rsplit('::', 1)[-1])}\s*\(", source)
+        )
 
     def is_user_frame(self, entry: dict[str, Any]) -> bool:
         name = entry.get("fullname") or entry.get("file")
         return bool(name and Path(name).resolve() == self.source.resolve())
+
+    def exception_stop(
+        self, debugger: MIClient, stopped: Record, breakpoints: dict[str, str]
+    ) -> Record | None:
+        """Observe C++ throw/catch runtime transitions without guessing an exception type."""
+        if stopped.value.get("reason") != "breakpoint-hit":
+            return None
+        operation = breakpoints.get(stopped.value.get("bkptno"))
+        if operation is None:
+            return None
+        frames, _ = debugger.command("-stack-list-frames")
+        raw = frames.value.get("stack", {}) if frames.name == "done" else {}
+        entries = raw.get("frame", []) if isinstance(raw, dict) else []
+        if isinstance(entries, dict):
+            entries = [entries]
+        stack = [
+            {
+                "func": item.get("func", "<unknown>"),
+                "path": self.source.name,
+                "line": int(item.get("line", 1)),
+            }
+            for item in entries
+            if self.is_user_frame(item)
+        ]
+        line = stack[0]["line"] if stack else self.current_line
+        if operation == "throw":
+            register = "$rdx" if sys.platform == "win32" else "$rsi"
+            typeinfo, _ = debugger.command(
+                f"-data-evaluate-expression {json.dumps('((void**)' + register + ')[1]')}"
+            )
+            text = typeinfo.value.get("value", "") if typeinfo.name == "done" else ""
+            symbol = re.search(r"<typeinfo name for ([^>]+)>", text)
+            name = symbol.group(1) if symbol else "C++ exception (type unavailable)"
+            self.pending_exception = {"type": name, "stack": stack}
+            self.emit(
+                "exception_raise",
+                type=name,
+                message="C++ exception thrown",
+                frame=self.current_frame,
+                line=line,
+                path=self.source.name,
+            )
+            resume = "-exec-continue"  # __cxa_throw does not return to its caller.
+        else:
+            self.emit(
+                "exception_catch",
+                handler_line=line,
+                frame=self.current_frame,
+                line=line,
+                path=self.source.name,
+            )
+            self.pending_exception = None
+            resume = "-exec-finish"
+        advanced, records = debugger.command(resume)
+        self.output(records)
+        if advanced.name != "running":
+            raise RuntimeError(f"GDB could not resume C++ exception: {advanced.value}")
+        returned, records = debugger.stop()
+        self.output(records)
+        return returned
 
     def input_stop(
         self, debugger: MIClient, stopped: Record, breakpoints: dict[str, str], input_path: Path
@@ -826,7 +1118,7 @@ class Trace:
             frame=self.current_frame,
             line=self.current_line,
             path=self.source.name,
-            prompt=self.last_stdout,
+            prompt=self.last_stdout or "Input requested",
         )
         self.last_stdout = ""
         before = time.monotonic()
@@ -901,9 +1193,15 @@ class Trace:
         finally:
             if ids and debugger.process.poll() is None:
                 debugger.command(f"-break-enable {ids}")
+        if self.language == "cpp" and operation in ("delete", "delete_array") and raw_arg:
+            self.freed_internal.add(address_of(raw_arg))
         if not direct_user:
+            if operation in ("new", "new_array"):
+                retval, _ = debugger.command('-data-evaluate-expression "$rax"')
+                if retval.name == "done" and retval.value.get("value"):
+                    self.freed_internal.discard(address_of(retval.value["value"]))
             return returned, []
-        if operation in ("malloc", "calloc"):
+        if operation in ("malloc", "calloc", "new", "new_array"):
             retval, _ = debugger.command('-data-evaluate-expression "$rax"')
             address = address_of(retval.value.get("value", "")) if retval.name == "done" else ""
             try:
@@ -958,9 +1256,9 @@ class Trace:
                     if previous_initialized:
                         self.initialized.add(address)
                     self.emit("mem_alloc", addr=address, size=size, region="heap", via="realloc")
-        elif operation == "free":
+        elif operation in ("free", "delete", "delete_array"):
             address = address_of(raw_arg) if raw_arg else ""
-            self.release(address, "free")
+            self.release(address, operation)
         return returned, []
 
 
@@ -972,6 +1270,8 @@ def address_of(raw: str) -> str:
 def native_value(raw: str | None, source: Path, name: str, line: int) -> dict[str, Any]:
     if raw is None or raw in {"<optimized out>", "<unavailable>"}:
         return {"unavailable": raw or "debugger could not read value"}
+    if raw == "nullptr":
+        return {"prim": None}
     terminator = re.search(r"\\(?:0{1,3}|x00)", raw) if raw.startswith('"') else None
     if terminator:
         try:
@@ -994,8 +1294,8 @@ def native_value(raw: str | None, source: Path, name: str, line: int) -> dict[st
     return {"unavailable": "Debugger value cannot be represented faithfully"}
 
 
-def compiler_version() -> str:
-    compiler = shutil.which("gcc")
+def compiler_version(language: str) -> str:
+    compiler = shutil.which("g++" if language == "cpp" else "gcc")
     if not compiler:
         return "compiler unavailable"
     try:
@@ -1015,15 +1315,29 @@ def run(args: argparse.Namespace) -> int:
         "flow_view_program.exe" if sys.platform == "win32" else "flow_view_program"
     )
     try:
+        compiler = "g++" if args.language == "cpp" else "gcc"
         build = subprocess.run(
-            ["gcc", "-g", "-O0", "-fno-omit-frame-pointer", str(source), "-o", str(binary)],
+            [
+                compiler,
+                "-g",
+                "-O0",
+                "-fno-omit-frame-pointer",
+                *(["-std=c++17"] if args.language == "cpp" else []),
+                str(source),
+                "-o",
+                str(binary),
+            ],
             capture_output=True,
             text=True,
             timeout=max(1, args.wall_ms / 1000),
             check=False,
         )
         if build.returncode:
-            trace.emit("note", level="warn", text=f"C compilation failed: {build.stderr[:3000]}")
+            trace.emit(
+                "note",
+                level="warn",
+                text=f"{args.language} compilation failed: {build.stderr[:3000]}",
+            )
             trace.end("error", build.returncode)
             return 1
         with MIClient(timeout=max(1, args.wall_ms / 1000)) as debugger:
@@ -1049,6 +1363,7 @@ def run(args: argparse.Namespace) -> int:
                 raise RuntimeError(f"GDB could not start the program: {started.value}")
             allocation_breakpoints: dict[str, str] = {}
             input_breakpoints: dict[str, str] = {}
+            exception_breakpoints: dict[str, str] = {}
             first_stop = True
             pending_stop: Record | None = None
             while True:
@@ -1065,6 +1380,22 @@ def run(args: argparse.Namespace) -> int:
                         result, _ = debugger.command(f"-break-insert {operation}")
                         if result.name == "done":
                             allocation_breakpoints[result.value["bkpt"]["number"]] = operation
+                    if trace.language == "cpp":
+                        for symbol, operation in (
+                            ("_Znwm", "new"),
+                            ("_Znwy", "new"),
+                            ("_Znam", "new_array"),
+                            ("_Znay", "new_array"),
+                            ("_ZdlPv", "delete"),
+                            ("_ZdlPvm", "delete"),
+                            ("_ZdlPvy", "delete"),
+                            ("_ZdaPv", "delete_array"),
+                            ("_ZdaPvm", "delete_array"),
+                            ("_ZdaPvy", "delete_array"),
+                        ):
+                            result, _ = debugger.command(f"-break-insert {symbol}")
+                            if result.name == "done":
+                                allocation_breakpoints[result.value["bkpt"]["number"]] = operation
                     # glibc rewrites scanf/fscanf calls to ISO-versioned symbols at link time.
                     # Break at the symbol actually called, not only the source-level spelling.
                     for operation in (
@@ -1082,6 +1413,30 @@ def run(args: argparse.Namespace) -> int:
                         result, _ = debugger.command(f"-break-insert {operation}")
                         if result.name == "done":
                             input_breakpoints[result.value["bkpt"]["number"]] = operation
+                    if trace.language == "cpp":
+                        for symbol in (
+                            "_ZNSirsERi",
+                            "_ZNSirsERx",
+                            "_ZNSirsERf",
+                            "_ZNSirsERd",
+                            "_ZNSirsERb",
+                            "_ZNSirsERPc",
+                        ):
+                            result, _ = debugger.command(f"-break-insert {symbol}")
+                            if result.name == "done":
+                                input_breakpoints[result.value["bkpt"]["number"]] = "cin"
+                    if trace.language == "cpp":
+                        for instruction, operation in (
+                            ("-catch-throw", "throw"),
+                            ("-catch-catch", "catch"),
+                        ):
+                            result, _ = debugger.command(instruction)
+                            if result.name == "done":
+                                exception_breakpoints[result.value["bkpt"]["number"]] = operation
+                exception = trace.exception_stop(debugger, stopped, exception_breakpoints)
+                if exception is not None:
+                    pending_stop = exception
+                    continue
                 answer_stop = trace.input_stop(debugger, stopped, input_breakpoints, input_path)
                 if answer_stop is not None:
                     pending_stop = answer_stop
@@ -1112,7 +1467,16 @@ def run(args: argparse.Namespace) -> int:
                         if trace.is_user_frame(item)
                     ]
                     signal_message = str(stopped.value.get("signal-meaning", signal_name))
-                    trace.emit("exception_raise", type=signal_name, message=signal_message)
+                    pending = (
+                        trace.pending_exception
+                        if signal_name not in {"SIGSEGV", "SIGBUS"}
+                        else None
+                    )
+                    if pending:
+                        signal_name = pending["type"]
+                        stack = pending["stack"]
+                    else:
+                        trace.emit("exception_raise", type=signal_name, message=signal_message)
                     trace.emit(
                         "exception_uncaught",
                         type=signal_name,
@@ -1176,12 +1540,16 @@ def run(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", required=True)
+    parser.add_argument("--language", choices=("c", "cpp"))
     parser.add_argument("--session-id", default="local")
     parser.add_argument("--max-steps", type=int, default=200000)
     parser.add_argument("--wall-ms", type=int, default=30000)
     parser.add_argument("--memory-mb", type=int, default=512)
     parser.add_argument("--output-bytes", type=int, default=1048576)
-    return run(parser.parse_args())
+    args = parser.parse_args()
+    if args.language is None:
+        args.language = "cpp" if Path(args.source).suffix in {".cpp", ".cc", ".cxx"} else "c"
+    return run(args)
 
 
 if __name__ == "__main__":

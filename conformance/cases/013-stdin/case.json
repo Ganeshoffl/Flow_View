@@ -27,6 +27,9 @@
   "expect_per_language": {
     "c": {
       "stdout": "Name: Age: Ada 36\n"
+    },
+    "cpp": {
+      "stdout": "Name: Age: Ada 36\n"
     }
   }
 }

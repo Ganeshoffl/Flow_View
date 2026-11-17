@@ -83,7 +83,7 @@ class TestCapabilities:
     def test_unbuilt_languages_say_so_and_name_the_phase(self, client: Any) -> None:
         # A language that is merely not built yet must not look like a broken installation.
         payload = client.get("/api/capabilities").json()
-        for language in ("cpp", "java"):
+        for language in ("java",):
             item = next(i for i in payload["languages"] if i["language"] == language)
             assert item["available"] is False
             assert item["reason"]
@@ -231,6 +231,28 @@ class TestCapabilities:
             if name == "flow_view_native" else None,
         )
         assert runner.c_adapter_cli() == cli
+
+    def test_cpp_requires_gpp_even_if_c_is_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import importlib
+
+        cap = importlib.import_module("flow_view_server.capabilities")
+        runner = importlib.import_module("flow_view_server.runner")
+        monkeypatch.setattr(runner, "c_adapter_cli", lambda: Path("/native/cli.py"))
+        monkeypatch.setattr(cap.shutil, "which", lambda name: None if name == "g++" else name)
+        entry = cap._cpp_support()
+        assert entry.available is False
+        assert "C++ compiler" in (entry.reason or "")
+        assert "g++" in (entry.remedy or "")
+
+    def test_cpp_available_with_gpp_and_gdb(self, client: Any) -> None:
+        import shutil
+
+        item = next(i for i in client.get("/api/capabilities").json()["languages"]
+                    if i["language"] == "cpp")
+        if shutil.which("g++") and shutil.which("gdb"):
+            assert item["available"] and item["version"] and not item["planned"]
+        else:
+            assert not item["available"] and item["remedy"]
 
     def test_a_missing_toolchain_offers_a_remedy(self, client: Any) -> None:
         import shutil
@@ -408,7 +430,7 @@ class TestRunning:
         assert check_trace_invariants(document).valid
 
     def test_an_unbuilt_language_is_refused_clearly(self, client: Any) -> None:
-        result = run_program(client, "int main(){}", language="cpp")
+        result = run_program(client, "class Main {}", language="java")
         assert result["errors"]
         message = result["errors"][0]["message"]
         assert "not available yet" in message
@@ -477,6 +499,39 @@ class TestRunningC:
         assert [e["source"] for e in events if e["t"] == "stdin_response"] == ["interactive"]
         assert "".join(e["text"] for e in events if e["t"] == "stdout") == "42"
         assert events[-1]["status"] == "ok"
+
+
+@pytest.mark.skipif(
+    not __import__("shutil").which("g++") or not __import__("shutil").which("gdb"),
+    reason="C++ tracing requires G++ and GDB",
+)
+class TestRunningCpp:
+    def test_class_vector_and_input_over_websocket(self, client: Any) -> None:
+        result = run_program(
+            client,
+            "#include <iostream>\n#include <vector>\n"
+            "struct Node { int value; Node(int n):value(n){} ~Node(){} };\n"
+            "int main(){\n int n=0;\n std::cin>>n;\n Node *p=new Node(n);\n"
+            " std::vector<int> v={p->value,2};\n v.push_back(3);\n"
+            " std::cout<<v[0]+v[2];\n delete p;\n return 0;\n}\n",
+            language="cpp",
+            stdin="21\n",
+        )
+        assert not result["errors"], result["errors"]
+        events = result["events"]
+        assert result["header"]["session"]["language"] == "cpp"
+        assert [e["text"] for e in events if e["t"] == "stdin_response"] == ["21"]
+        assert [e["source"] for e in events if e["t"] == "stdin_response"] == ["prefilled"]
+        assert "".join(e["text"] for e in events if e["t"] == "stdout") == "24"
+        assert any(e["t"] == "frame_push" and e["kind"] == "constructor" for e in events)
+        assert any(e["t"] == "obj_new" and e["type_name"] == "Node" for e in events)
+        assert any(e["t"] == "obj_new" and e["kind"] == "array" for e in events)
+        assert any(e["t"] == "mem_free" and e["via"] == "delete" for e in events)
+        assert events[-1]["t"] == "run_end" and events[-1]["status"] == "ok"
+        document = {"schema": result["header"]["schema"],
+                    "session": result["header"]["session"], "events": events}
+        assert validate_trace(document).valid
+        assert check_trace_invariants(document).valid
 
 
 @needs_node

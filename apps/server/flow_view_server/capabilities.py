@@ -110,37 +110,39 @@ def _major_version(version: str | None) -> int | None:
     return int(digits) if digits else None
 
 
-def _c_support() -> LanguageSupport:
-    """C needs the compiled-debug CLI and both tools it launches."""
+def _native_support(language: str, compiler_name: str) -> LanguageSupport:
+    """Only enable a native language when its CLI, compiler, and debugger exist."""
     from .runner import c_adapter_cli
 
-    compiler = shutil.which("gcc")
+    compiler = shutil.which(compiler_name)
     gdb = shutil.which("gdb")
     cli = c_adapter_cli()
+    label = "C++" if language == "cpp" else "C"
     missing: list[str] = []
     remedies: list[str] = []
     if not compiler:
-        missing.append("the GCC C compiler")
-        remedies.append("Install GCC and put gcc on PATH.")
+        missing.append(f"the {compiler_name.upper() if language == 'c' else 'G++'} {label} compiler")
+        remedies.append(f"Install {compiler_name.upper() if language == 'c' else 'G++'} and put {compiler_name} on PATH.")
     if not gdb:
         missing.append("GDB")
         remedies.append("Install GDB and put gdb on PATH (for example, `sudo apt install gdb`).")
     if cli is None:
-        missing.append("the compiled-debug C adapter CLI")
-        remedies.append(
-            "Install a build containing the C adapter CLI, or run from a checkout once it lands."
-        )
+        missing.append("the compiled-debug native adapter CLI")
+        remedies.append("Install a build containing the native adapter CLI, or run from a checkout.")
     version = _tool_version([compiler, "--version"]) if compiler else None
     if missing:
-        return LanguageSupport(
-            language="c",
-            available=False,
-            version=version,
-            reason=f"Missing {', '.join(missing)}.",
-            remedy=" ".join(remedies),
-            planned="phase 8" if cli is None else None,
-        )
-    return LanguageSupport(language="c", available=True, version=version)
+        return LanguageSupport(language=language, available=False, version=version,
+                               reason=f"Missing {', '.join(missing)}.", remedy=" ".join(remedies),
+                               planned="phase 8" if cli is None else None)
+    return LanguageSupport(language=language, available=True, version=version)
+
+
+def _c_support() -> LanguageSupport:
+    return _native_support("c", "gcc")
+
+
+def _cpp_support() -> LanguageSupport:
+    return _native_support("cpp", "g++")
 
 
 @lru_cache(maxsize=1)
@@ -156,32 +158,7 @@ def language_support() -> tuple[LanguageSupport, ...]:
 
     support.append(_javascript_support())
     support.append(_c_support())
-
-    has_gpp = shutil.which("g++") or shutil.which("clang++")
-    gdb = shutil.which("gdb")
-    for language, compiler in (("cpp", has_gpp),):
-        missing: list[str] = []
-        if not compiler:
-            missing.append("a C compiler" if language == "c" else "a C++ compiler")
-        if not gdb:
-            missing.append("gdb")
-        support.append(
-            LanguageSupport(
-                language=language,
-                available=False,
-                version=_tool_version([compiler, "--version"]) if compiler else None,
-                reason=(
-                    f"Missing {' and '.join(missing)}." if missing
-                    else "The C/C++ adapter is not built yet."
-                ),
-                remedy=(
-                    "Install gdb, for example `sudo dnf install gdb` or `sudo apt install gdb`."
-                    if not gdb
-                    else None
-                ),
-                planned="phase 8",
-            )
-        )
+    support.append(_cpp_support())
 
     java = shutil.which("javac")
     support.append(

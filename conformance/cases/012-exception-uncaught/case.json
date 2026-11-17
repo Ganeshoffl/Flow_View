@@ -24,6 +24,11 @@
       "exceptions": {
         "uncaught": "SIGSEGV"
       }
+    },
+    "cpp": {
+      "exceptions": {
+        "uncaught": "std::runtime_error"
+      }
     }
   }
 }

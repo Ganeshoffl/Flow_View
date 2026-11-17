@@ -212,19 +212,17 @@ def _javascript_adapter(workdir: str, limits: "RunLimits") -> Adapter:
     )
 
 
-def _c_adapter(workdir: str, limits: RunLimits) -> Adapter:
+def _native_adapter(language: str, source_name: str, compiler: str) -> Adapter:
     cli = c_adapter_cli()
     if cli is None:
-        raise FileNotFoundError(
-            "The compiled-debug C adapter CLI is not installed alongside this server."
-        )
-    if not shutil.which("gcc"):
-        raise FileNotFoundError("GCC is required to trace C programs.")
+        raise FileNotFoundError("The compiled-debug native adapter CLI is not installed.")
+    if not shutil.which(compiler):
+        raise FileNotFoundError(f"{compiler} is required to trace {language} programs.")
     if not shutil.which("gdb"):
-        raise FileNotFoundError("GDB is required to trace C programs.")
+        raise FileNotFoundError("GDB is required to trace native programs.")
     return Adapter(
-        language="c",
-        source_name="main.c",
+        language=language,
+        source_name=source_name,
         launcher=[sys.executable, "-I"],
         script=cli,
         accepts=frozenset(
@@ -233,10 +231,19 @@ def _c_adapter(workdir: str, limits: RunLimits) -> Adapter:
     )
 
 
+def _c_adapter(workdir: str, limits: RunLimits) -> Adapter:
+    return _native_adapter("c", "main.c", "gcc")
+
+
+def _cpp_adapter(workdir: str, limits: RunLimits) -> Adapter:
+    return _native_adapter("cpp", "main.cpp", "g++")
+
+
 _ADAPTERS: dict[str, Callable[[str, RunLimits], Adapter]] = {
     "python": _python_adapter,
     "javascript": _javascript_adapter,
     "c": _c_adapter,
+    "cpp": _cpp_adapter,
 }
 
 

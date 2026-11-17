@@ -523,7 +523,7 @@ def _check_heap(expect: dict[str, Any], trace: Trace, result: Result) -> None:
         # Managed runtimes use object ids; native pointers use the observed address.
         identities = [
             value.obj if isinstance(value, _Ref)
-            else value if trace.session.get("language") == "c"
+            else value if trace.session.get("language") in {"c", "cpp"}
             and isinstance(value, str) and value.startswith("0x") else None
             for value in values
         ]
@@ -542,7 +542,7 @@ def _check_heap(expect: dict[str, Any], trace: Trace, result: Result) -> None:
         mutations = [
             e for e in trace.of("obj_set") if e.get("op") in ("append", "insert", "delete")
         ]
-        if trace.session.get("language") == "c":
+        if trace.session.get("language") in {"c", "cpp"}:
             # A native pointee has no append operator: count an observed write to
             # previously uninitialized memory instead of its initial unknown slot.
             mutations += [
@@ -787,17 +787,18 @@ def run_javascript(case: Case) -> Trace:
     )
 
 
-def run_c(case: Case) -> Trace:
-    """Run compiled C through its real debugger CLI under the shared corpus contract."""
+def run_native(case: Case, language: str) -> Trace:
+    """Run C or C++ through the same debugger CLI and shared corpus contract."""
     import subprocess
     import tempfile
 
-    source = case.source_for("c")
+    source = case.source_for(language)
     assert source is not None
     limits = case.expect.get("limits") or {}
     cli = REPO / "adapters" / "native" / "flow_view_native" / "cli.py"
-    with tempfile.TemporaryDirectory(prefix="flow_view_c_") as workdir:
-        program = Path(workdir) / "main.c"
+    filename = SOURCE_FILES[language]
+    with tempfile.TemporaryDirectory(prefix=f"flow_view_{language}_") as workdir:
+        program = Path(workdir) / filename
         program.write_text(source, encoding="utf-8")
         completed = subprocess.run(
             [sys.executable, "-I", str(cli), "--source", str(program),
@@ -809,16 +810,24 @@ def run_c(case: Case) -> Trace:
     try:
         records = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
     except json.JSONDecodeError as error:
-        raise RuntimeError(f"C adapter emitted invalid JSON: {completed.stderr[-1000:]}") from error
+        raise RuntimeError(f"{language} adapter emitted invalid JSON: {completed.stderr[-1000:]}") from error
     if not records or "session" not in records[0]:
-        raise RuntimeError(f"C adapter produced no header: {completed.stderr[-1000:]}")
+        raise RuntimeError(f"{language} adapter produced no header: {completed.stderr[-1000:]}")
     events = records[1:]
     status = next((e["status"] for e in reversed(events) if e.get("t") == "run_end"), "error")
     return Trace(records[0]["schema"], records[0]["session"], events, status)
 
 
+def run_c(case: Case) -> Trace:
+    return run_native(case, "c")
+
+
+def run_cpp(case: Case) -> Trace:
+    return run_native(case, "cpp")
+
+
 ADAPTERS: dict[str, Callable[[Case], Trace]] = {"python": run_python, "javascript": run_javascript,
-                                                  "c": run_c}
+                                                  "c": run_c, "cpp": run_cpp}
 
 
 def write_trace(case: Case, language: str, trace: Trace) -> Path:

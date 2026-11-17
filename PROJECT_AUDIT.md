@@ -15,6 +15,8 @@ Authoritative sources: `README.md`, `.kiro/specs/flow-view/{requirements,design,
 
 - C milestone (2026-11-16): GCC/GDB MI3 traces real C execution, integer returns, stack/locals, branches/loops, bounded heap memory, pointer aliases/dangling references, allocation/free and interactive stdin. All 15 applicable C corpus cases pass (2 not applicable); full 48/48 corpus, 1220/1220 Vitest, native/server and installed-wheel socket checks pass locally. Edge displayed three linked `struct Node` objects with two arrows, two live prompts, output and reversible timeline. Full Ruff retains inherited diagnostics; Linux CI and other OS remain unverified at this checkpoint.
 
+- C++ milestone (2026-11-17, Windows): shared GDB/MI3 adapter compiled real C++ programs; 16/16 applicable C++ corpus cases and 64/64 total corpus cases pass. Vitest 1460/1460 (including C++ forward/inverse replay), native/server tests, installed-wheel WebSocket and live Edge checks pass. Edge displayed three linked class objects, a vector and interactive cin, then rewound with no page errors. `std::map` size is observed; entries remain explicitly unavailable. Linux CI and macOS are pending.
+
 ## Requirement-to-implementation matrix
 
 Statuses indicate verified behavior in this Windows environment, not promises in source comments. A row marked Partial may contain substantial working code.
@@ -29,7 +31,7 @@ Statuses indicate verified behavior in this Windows environment, not promises in
 | Python stdin/output/three prompts | tracer bridge, server socket, browser, `apps/web/src/traceFiles.ts` | Complete | Three interactive browser prompts, saved file import and replay without re-execution verified; other OS untested |
 | JavaScript adapter and shared schema | `adapters/javascript/src/`, bundled CLI, server runner | Complete | Windows corpus, wheel socket smoke and live Edge UI pass; async/imports and other OS unverified |
 | C actual debugger trace | `adapters/native/flow_view_native/`, GDB/MI3, server runner | Complete | 15/15 applicable cases, real Edge heap/timeline/input and wheel run pass on Windows; Linux/macOS, wider structures and limits remain open |
-| C++ actual debugger trace | capability placeholder | Missing | Reuse C debugger; C++ types/lifetime/containers and tests |
+| C++ actual debugger trace | shared `flow_view_native` GDB/MI3, server runner | Complete | Windows 16/16 applicable corpus, class/vector/heap/input Edge and wheel checks pass; Linux CI, macOS and map entry enumeration open |
 | Java actual JDI trace | capability placeholder | Missing | JDK/JDI integration and conformance |
 | Structure inference, confidence, override | `packages/structure-inference/` and UI | Partial | Browser confirmation, ambiguous graphs and cross-language runtime evidence |
 | Narration and metrics | `packages/narration/`, UI | Partial | Audit observable comparisons/swaps and test across adapters |
@@ -37,13 +39,13 @@ Statuses indicate verified behavior in this Windows environment, not promises in
 | Playback/seek and history | `packages/trace-store/`, `apps/web/` | Partial | Cold large-trace seek, fold expansion, retention gates |
 | Loop folding at scale | Python/JS collapse, store | Partial | 100k cold seek and million-loop UI measurement; retain significant effects |
 | Offline Lite/PWA Python and JS | no worker engine or Lite build | Missing | Pyodide, JS worker, local assets, service worker, offline gate |
-| Full CLI/wheel | `flow-view` script, bundled web, JavaScript and C | Partial | Installed wheel JS/C smoke passes outside checkout; clean-venv and other-platform validation open |
+| Full CLI/wheel | `flow-view` script, bundled web, JavaScript, C and C++ | Partial | Installed wheel JS/C/C++ socket smoke passes outside checkout; clean-venv and other-platform validation open |
 | Saved sessions/trace import/export | `apps/web/src/traceFiles.ts`, run-mode controls | Complete | 64 MB file ceiling; local browser save/reopen without a new run verified; no separate session list/autosave |
 | Accessibility and responsive UI | React UI | Partial | Browser keyboard/screen-reader/responsive verification |
 | CI, cross-platform lint and security | `.github/workflows/ci.yml`, guard reporting | Partial | Windows CI, pinned compatible dev dependencies, existing lint backlog, honest isolation limits |
 
-**Verified requirement progress:** 6 of 20 matrix rows independently pass their currently applicable automated and browser gates in this Windows environment (30%). The other 14 rows retain open gates; `Complete` does not waive other-platform checks. No project-wide completion claim is made.
+**Verified requirement progress:** 7 of 20 matrix rows independently pass their currently applicable automated and browser gates in this Windows environment (35%). The other 13 rows retain open gates; `Complete` does not waive other-platform checks. No project-wide completion claim is made.
 
 ## Known blockers and fidelity limits
 
-Full-profile arbitrary code execution is local-only and not a hostile-code sandbox; Windows now has a Job Object per run with a tested committed-memory ceiling and descendant termination; it is assigned after child creation, so a startup race remains and it is not a hostile-code sandbox. POSIX CPU/file/address-space limits remain unavailable there. Python's strong object registry delays finalizers. The UI bundle emits a >500 kB warning. CI runs Linux with Python 3.12 and Node 22, not this Windows environment. The repository's `ab` command is unavailable, but its fixture replay checks were reproduced with Playwright/Edge over all 18 current fixtures. C native tracing is verified locally; C++, Java and offline Lite remain unperformed. Do not mark language implementations finished from this audit alone.
+Full-profile arbitrary code execution is local-only and not a hostile-code sandbox; Windows now has a Job Object per run with a tested committed-memory ceiling and descendant termination; it is assigned after child creation, so a startup race remains and it is not a hostile-code sandbox. POSIX CPU/file/address-space limits remain unavailable there. Python's strong object registry delays finalizers. The UI bundle emits a >500 kB warning. CI runs Linux with Python 3.12 and Node 22, not this Windows environment. The repository's `ab` command is unavailable, but its fixture replay checks were reproduced with Playwright/Edge over all 18 current fixtures. C and C++ native tracing are verified locally; Java and offline Lite remain unperformed. Do not mark language implementations finished from this audit alone.
