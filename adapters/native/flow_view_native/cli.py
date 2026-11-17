@@ -44,6 +44,7 @@ class Trace:
         self.return_modes: set[int] = set()
         self.return_values: dict[int, dict[str, Any]] = {}
         self.pending_exception: dict[str, Any] | None = None
+        self.pending_internal_catch = False
         self.pending_branches: dict[int, tuple[int, str, str, int]] = {}
         self.loop_ranges: set[tuple[int, int]] = set()
         self.loop_bodies: dict[tuple[int, int], int] = {}
@@ -238,6 +239,9 @@ class Trace:
             levels = [levels]
         if not levels or not self.is_user_frame(levels[0]):
             return False
+        if self.pending_internal_catch:
+            self.pending_exception = None
+            self.pending_internal_catch = False
         # GDB lists innermost first; use only frames backed by the user's own source.
         active = [entry for entry in reversed(levels) if self.is_user_frame(entry)]
         matched = 0
@@ -1031,6 +1035,17 @@ class Trace:
             if self.is_user_frame(item)
         ]
         line = stack[0]["line"] if stack else self.current_line
+        if operation == "catch" and (len(entries) < 2 or not self.is_user_frame(entries[1])):
+            # A non-user catch may be std::terminate preparing an uncaught report.
+            # Retain the thrown type until execution actually resumes in user source.
+            self.pending_internal_catch = True
+            advanced, records = debugger.command("-exec-continue")
+            self.output(records)
+            if advanced.name != "running":
+                raise RuntimeError(f"GDB could not resume C++ runtime catch: {advanced.value}")
+            returned, records = debugger.stop()
+            self.output(records)
+            return returned
         if operation == "throw":
             register = "$rdx" if sys.platform == "win32" else "$rsi"
             typeinfo, _ = debugger.command(
@@ -1321,6 +1336,15 @@ def run(args: argparse.Namespace) -> int:
             breakpoint, _ = debugger.command("-break-insert main")
             if loaded.name != "done" or breakpoint.name != "done":
                 raise RuntimeError("GDB could not load the executable or locate main")
+            exception_breakpoints: dict[str, str] = {}
+            if trace.language == "cpp":
+                for instruction, operation in (("-catch-throw", "throw"),
+                                               ("-catch-catch", "catch")):
+                    result, _ = debugger.command(instruction)
+                    if result.name == "done":
+                        exception_breakpoints[result.value["bkpt"]["number"]] = operation
+                if not exception_breakpoints:
+                    trace.emit("note", level="warn", text="GDB cannot catch C++ exceptions here.")
             input_path = source.with_name(".flow_view_stdin")
             input_path.write_bytes(b"")
             trace.output_path = source.with_name(".flow_view_stdout")
@@ -1339,7 +1363,6 @@ def run(args: argparse.Namespace) -> int:
                 raise RuntimeError(f"GDB could not start the program: {started.value}")
             allocation_breakpoints: dict[str, str] = {}
             input_breakpoints: dict[str, str] = {}
-            exception_breakpoints: dict[str, str] = {}
             first_stop = True
             pending_stop: Record | None = None
             while True:
@@ -1401,14 +1424,6 @@ def run(args: argparse.Namespace) -> int:
                             result, _ = debugger.command(f"-break-insert {symbol}")
                             if result.name == "done":
                                 input_breakpoints[result.value["bkpt"]["number"]] = "cin"
-                    if trace.language == "cpp":
-                        for instruction, operation in (
-                            ("-catch-throw", "throw"),
-                            ("-catch-catch", "catch"),
-                        ):
-                            result, _ = debugger.command(instruction)
-                            if result.name == "done":
-                                exception_breakpoints[result.value["bkpt"]["number"]] = operation
                 exception = trace.exception_stop(debugger, stopped, exception_breakpoints)
                 if exception is not None:
                     pending_stop = exception

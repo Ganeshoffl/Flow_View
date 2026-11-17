@@ -99,7 +99,10 @@ def test_caught_and_uncaught_cpp_exceptions(tmp_path: Path) -> None:
         tmp_path, '#include <stdexcept>\nint main(){throw std::runtime_error("oops");}'
     )
     assert uncaught[-1]["status"] == "error"
-    assert [e["type"] for e in uncaught if e["t"] == "exception_uncaught"] == ["std::runtime_error"]
+    assert [e["type"] for e in uncaught if e["t"] == "exception_uncaught"] == [
+        "std::runtime_error"
+    ], [(e["t"], e.get("type"), e.get("text")) for e in uncaught
+        if e["t"].startswith("exception_") or e["t"] == "note"]
 
 
 def test_std_vector_reports_elements_and_lifetime(tmp_path: Path) -> None:
