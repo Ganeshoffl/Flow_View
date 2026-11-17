@@ -21,6 +21,8 @@ Updated 2026-11-17. Branch `development/flow-view-completion`, based on `main` `
 
 - C++ gate (2026-11-17, Windows): shared GDB/MI3 adapter traces G++17 classes, constructor/destructor frames, new/delete and arrays, reference identity, typed linked objects/dangling pointers, caught/uncaught exceptions, bounded `std::vector` elements and `std::map` size (entries explicitly unavailable), cin and reversible playback. 16/16 applicable C++ corpus cases pass (1 Python-specific case not applicable); full corpus 64/64, Vitest 1460/1460, Python/native/server tests, schema/typecheck/build, scoped Ruff and backend comparison pass. Wheel installed outside checkout completed JS/C/C++ WebSocket smoke. Edge rendered three linked C++ nodes, vector slots and interactive cin, then rewound each run to step 0 with no page errors. Full Python suite emitted one Windows asyncio transport cleanup warning; Linux CI and macOS C++ gates are pending.
 
+- C++ checkpoint `2129022` was pushed and matched `git ls-remote`. Linux CI run `44024937780` reached Python tests but failed C++ vector/map/server object assertions: GDB's Linux value formatting omitted the Windows-specific raw markers. Container detection now uses GDB's declared type instead; focused Windows tests pass, Linux recheck pending.
+
 ## Modified files and checkpoints
 
 The verified platform fix commit changed `packages/trace-schema/generate.py`, `adapters/python/flow_view_tracer/tracer.py`, `apps/server/flow_view_server/runner.py`, `apps/server/tests/test_server.py`, and `pyproject.toml`. The subsequent audit checkpoint added `PROJECT_AUDIT.md`, `IMPLEMENTATION_PLAN.md`, and `TASK_TRACKER.md`. The session milestone added three-question interactive socket verification, recovered a shadowed Python folding test, added `apps/web/src/traceFiles.ts` plus UI controls in `App.tsx` and `useLiveRun.ts`, added three saved-trace unit tests, and updated README and audit evidence. The Windows milestone added Job Object process/memory supervision and real Windows tests. The Python regression checkpoint `489a483` was pushed and confirmed. JavaScript changes and verification are recorded below; the prior statement that only this tracker was modified applied before that checkpoint.
@@ -35,4 +37,4 @@ The verified platform fix commit changed `packages/trace-schema/generate.py`, `a
 
 ## Exact next task
 
-Commit and push the verified C++ Windows gate; confirm its remote hash and Linux CI. Fix any CI failures before beginning Java. Cross-cutting performance, Lite/offline, macOS, clean-venv and full Ruff remain open.
+Recheck C++ Linux CI after the type-based vector/map fix; address any remaining failures, confirm push and CI before Java. Cross-cutting performance, Lite/offline, macOS, clean-venv and full Ruff remain open.

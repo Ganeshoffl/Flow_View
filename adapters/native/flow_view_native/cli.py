@@ -388,33 +388,19 @@ class Trace:
                         if raw_value == self.local_baselines.get(key):
                             continue
                         self.initialized_locals.add(key)
-                vector = (
-                    self.inspect_vector(debugger, frame, name)
-                    if self.language == "cpp"
-                    and isinstance(raw_value, str)
-                    and "_Vector_base" in raw_value
-                    else None
-                )
-                mapping = (
-                    self.inspect_map(debugger, frame, name)
-                    if vector is None
-                    and self.language == "cpp"
-                    and isinstance(raw_value, str)
-                    and "_Rb_tree" in raw_value
-                    else None
-                )
-                container = vector if vector is not None else mapping
-                value = (
-                    container
-                    if container is not None
-                    else native_value(raw_value, self.source, "", 0)
-                )
+                value = native_value(raw_value, self.source, "", 0)
+                type_name = ""
                 if self.language == "cpp" and "unavailable" in value and raw_value is not None:
                     typed, _ = debugger.command(f"-var-create - * {json.dumps(name)}")
                     if typed.name == "done":
-                        if typed.value.get("type") == "std::nullptr_t":
-                            value = {"prim": None}
+                        type_name = typed.value.get("type", "")
                         debugger.command(f"-var-delete {typed.value['name']}")
+                if type_name.startswith("std::vector<"):
+                    value = self.inspect_vector(debugger, frame, name, type_name) or value
+                elif type_name.startswith("std::map<"):
+                    value = self.inspect_map(debugger, frame, name, type_name) or value
+                elif type_name == "std::nullptr_t":
+                    value = {"prim": None}
                 reference = (
                     re.match(r"^@(0x[0-9a-fA-F]+):", raw_value)
                     if self.language == "cpp" and isinstance(raw_value, str)
@@ -557,15 +543,10 @@ class Trace:
         self.announced_objects.add(obj)
         self.object_kinds[obj] = kind
 
-    def inspect_map(self, debugger: MIClient, frame: int, name: str) -> dict[str, Any] | None:
+    def inspect_map(
+        self, debugger: MIClient, frame: int, name: str, type_name: str
+    ) -> dict[str, Any] | None:
         """Show a std::map's observed identity and size without inventing key/value pairs."""
-        created, _ = debugger.command(f"-var-create - * {json.dumps(name)}")
-        if created.name != "done":
-            return None
-        type_name = created.value.get("type", "")
-        debugger.command(f"-var-delete {created.value['name']}")
-        if not type_name.startswith("std::map<"):
-            return None
         count, _ = debugger.command(
             f"-data-evaluate-expression {json.dumps(name + '._M_t._M_impl._M_node_count')}"
         )
@@ -609,15 +590,10 @@ class Trace:
             self.container_lengths[obj] = length
         return {"ref": obj}
 
-    def inspect_vector(self, debugger: MIClient, frame: int, name: str) -> dict[str, Any] | None:
+    def inspect_vector(
+        self, debugger: MIClient, frame: int, name: str, type_name: str
+    ) -> dict[str, Any] | None:
         """Expose observed std::vector elements, not libstdc++ allocator internals."""
-        created, _ = debugger.command(f"-var-create - * {json.dumps(name)}")
-        if created.name != "done":
-            return None
-        type_name = created.value.get("type", "")
-        debugger.command(f"-var-delete {created.value['name']}")
-        if not type_name.startswith("std::vector<"):
-            return None
         key = (frame, name)
         if key in self.dead_containers:
             return {"unavailable": "std::vector lifetime ended"}
